@@ -27,6 +27,7 @@ pub enum OracleError {
     ChallengeWindowExpired = 8,
     InsufficientStake = 9,
     InvalidSignature = 10,
+    InvalidResolution = 11,
 }
 
 #[derive(Clone, Debug, PartialEq)]

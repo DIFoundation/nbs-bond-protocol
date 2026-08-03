@@ -417,6 +417,10 @@ impl OracleConsumer {
 
         require_admin(&env, &caller)?;
 
+        if resolution != ReportStatus::Verified && resolution != ReportStatus::Rejected {
+            return Err(OracleError::InvalidResolution);
+        }
+
         let mut challenge: Challenge = env
             .storage()
             .instance()
@@ -1013,6 +1017,48 @@ mod test {
             &2,
         );
         assert_eq!(result, Ok(Ok(())));
+    }
+
+    #[test]
+    fn test_resolve_challenge_rejects_non_terminal_status() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        for invalid in [ReportStatus::Pending, ReportStatus::Challenged] {
+            let result = client.try_resolve_challenge(&admin, &report_id, &invalid, &1);
+            assert_eq!(result, Err(Ok(OracleError::InvalidResolution)));
+        }
+
+        let challenge = client.get_challenge(&report_id);
+        assert!(!challenge.resolved);
     }
 
     #[test]
