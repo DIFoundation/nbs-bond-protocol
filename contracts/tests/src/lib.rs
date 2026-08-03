@@ -92,7 +92,10 @@ mod integration {
         );
         let dr_client = DEXRouterClient::new(env, &dr_addr);
 
-        let cr_addr = env.register(CreditRetirement, (admin.clone(),));
+        let cr_addr = env.register(
+            CreditRetirement,
+            (admin.clone(), bi_addr.clone(), ce_addr.clone()),
+        );
         let cr_client = CreditRetirementClient::new(env, &cr_addr);
 
         TestContracts {

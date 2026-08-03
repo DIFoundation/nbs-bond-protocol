@@ -63,4 +63,6 @@ pub enum CreditError {
     InsufficientCredits = 3,
     AlreadyRetired = 4,
     InvalidNonce = 5,
+    NotAHolder = 6,
+    InvalidCertificate = 7,
 }

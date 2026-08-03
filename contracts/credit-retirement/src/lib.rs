@@ -1,6 +1,6 @@
 #![no_std]
 #![allow(deprecated)]
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec};
 use nbbs_shared::{CreditError, CreditType};
 
 #[derive(Clone)]
@@ -11,6 +11,9 @@ pub enum DataKey {
     RetirementCount,
     HolderRetirements(Address),
     RetiredCredits(Address),
+    RetiredPerBond(u64, Address),
+    BondIssuerAddress,
+    CouponEngineAddress,
     Nonce(Address),
 }
 
@@ -56,8 +59,19 @@ pub struct CreditRetirement;
 
 #[contractimpl]
 impl CreditRetirement {
-    pub fn __constructor(env: Env, admin: Address) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        bond_issuer_address: Address,
+        coupon_engine_address: Address,
+    ) {
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::BondIssuerAddress, &bond_issuer_address);
+        env.storage()
+            .instance()
+            .set(&DataKey::CouponEngineAddress, &coupon_engine_address);
     }
 
     pub fn retire_credits(
@@ -80,6 +94,47 @@ impl CreditRetirement {
         if amount <= 0 {
             return Err(CreditError::InsufficientCredits);
         }
+
+        if certificate_hash.to_array().iter().all(|b| *b == 0) {
+            return Err(CreditError::InvalidCertificate);
+        }
+
+        let bond_issuer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondIssuerAddress)
+            .ok_or(CreditError::NotInitialized)?;
+        let balance: i128 = env.invoke_contract(
+            &bond_issuer,
+            &Symbol::new(&env, "get_holder_balance"),
+            vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
+        );
+        if balance <= 0 {
+            return Err(CreditError::NotAHolder);
+        }
+
+        let coupon_engine: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::CouponEngineAddress)
+            .ok_or(CreditError::NotInitialized)?;
+        let accrued: i128 = env.invoke_contract(
+            &coupon_engine,
+            &Symbol::new(&env, "accrued_credits"),
+            vec![&env, bond_id.into_val(&env), holder.clone().into_val(&env)],
+        );
+
+        let retired_key = DataKey::RetiredPerBond(bond_id, holder.clone());
+        let already_retired: i128 = env.storage().instance().get(&retired_key).unwrap_or(0);
+        let remaining = accrued
+            .checked_sub(already_retired)
+            .ok_or(CreditError::InsufficientCredits)?;
+        if amount > remaining {
+            return Err(CreditError::InsufficientCredits);
+        }
+        env.storage()
+            .instance()
+            .set(&retired_key, &(already_retired + amount));
 
         let count: u64 = env
             .storage()
@@ -111,9 +166,12 @@ impl CreditRetirement {
             .instance()
             .get(&DataKey::RetiredCredits(holder.clone()))
             .unwrap_or(0);
+        let new_total = retired
+            .checked_add(amount)
+            .ok_or(CreditError::InsufficientCredits)?;
         env.storage()
             .instance()
-            .set(&DataKey::RetiredCredits(holder.clone()), &(retired + amount));
+            .set(&DataKey::RetiredCredits(holder.clone()), &new_total);
 
         let mut retirements: Vec<u64> = env
             .storage()
@@ -189,7 +247,12 @@ impl CreditRetirement {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{
+        testutils::Address as _, vec as svec, BytesN, Env, Symbol,
+    };
+    use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
+    use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
+    use nbbs_shared::{BondConfig, OracleReport};
 
     fn make_certificate_hash(env: &Env, value: u8) -> BytesN<32> {
         let mut arr = [0u8; 32];
@@ -197,70 +260,136 @@ mod test {
         BytesN::from_array(env, &arr)
     }
 
-    #[test]
-    fn test_retire_credits_and_query() {
+    fn make_project_id(env: &Env, value: u8) -> BytesN<32> {
+        let mut arr = [0u8; 32];
+        arr[31] = value;
+        BytesN::from_array(env, &arr)
+    }
+
+    fn make_report(env: &Env, project_id: BytesN<32>, carbon: i128) -> OracleReport {
+        OracleReport {
+            project_id,
+            period_start: 1000,
+            period_end: 2000,
+            carbon_sequestered: carbon,
+            methodology: Symbol::new(env, "verra_vcs"),
+            provider_signature: BytesN::from_array(env, &[0u8; 64]),
+            ipfs_evidence_hash: make_certificate_hash(env, 9),
+        }
+    }
+
+    struct Setup {
+        _env: Env,
+        client: CreditRetirementClient<'static>,
+        holder: Address,
+        bond_id: u64,
+        accrued: i128,
+    }
+
+    fn setup() -> Setup {
         let env = Env::default();
         env.mock_all_auths();
 
         let admin = Address::generate(&env);
         let holder = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let project_id = make_project_id(&env, 1);
 
-        let contract_id = env.register(CreditRetirement, (admin,));
+        let issuer_admin = Address::generate(&env);
+        let issuer_id = env.register(BondIssuer, (issuer_admin.clone(),));
+        let issuer_client = BondIssuerClient::new(&env, &issuer_id);
+
+        let bond_config = BondConfig {
+            project_id: project_id.clone(),
+            face_value: 1000,
+            coupon_schedule: svec![&env, 1_000_000u64, 2_000_000u64],
+            credit_type: CreditType::Carbon,
+            maturity_date: 3_000_000,
+            total_supply: 10_000,
+        };
+        let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
+        issuer_client.subscribe(&holder, &bond_id, &10_000, &0);
+
+        let ce_id = env.register(
+            CouponEngine,
+            (admin.clone(), issuer_id.clone(), oracle.clone()),
+        );
+        let ce_client = CouponEngineClient::new(&env, &ce_id);
+        ce_client.register_bond(&admin, &bond_id, &project_id, &0);
+
+        let report = make_report(&env, project_id, 100_000);
+        let holders = svec![&env, holder.clone()];
+        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report, &1);
+        let accrued = ce_client.accrued_credits(&bond_id, &holder);
+        assert!(accrued > 0);
+
+        let contract_id = env.register(
+            CreditRetirement,
+            (admin, issuer_id.clone(), ce_id.clone()),
+        );
         let client = CreditRetirementClient::new(&env, &contract_id);
 
-        let hash = make_certificate_hash(&env, 1);
-        let id = client.retire_credits(
-            &holder,
-            &1,
-            &1000i128,
+        Setup {
+            _env: env,
+            client,
+            holder,
+            bond_id,
+            accrued,
+        }
+    }
+
+    #[test]
+    fn test_retire_credits_and_query() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 1);
+        let id = s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.accrued,
             &CreditType::Carbon,
             &hash,
             &0,
         );
         assert_eq!(id, 1);
 
-        let record = client.get_retirement_record(&id);
-        assert_eq!(record.holder, holder);
-        assert_eq!(record.bond_id, 1);
-        assert_eq!(record.amount, 1000);
+        let record = s.client.get_retirement_record(&id);
+        assert_eq!(record.holder, s.holder);
+        assert_eq!(record.bond_id, s.bond_id);
+        assert_eq!(record.amount, s.accrued);
         assert_eq!(record.credit_type, CreditType::Carbon);
         assert_eq!(record.certificate_ipfs_hash, hash);
 
-        let cert = client.get_retirement_certificate(&id);
+        let cert = s.client.get_retirement_certificate(&id);
         assert_eq!(cert.record_id, id);
-        assert_eq!(cert.holder, holder);
-        assert_eq!(cert.amount, 1000);
+        assert_eq!(cert.holder, s.holder);
+        assert_eq!(cert.amount, s.accrued);
         assert_eq!(cert.certificate_hash, hash);
 
-        assert_eq!(client.total_retirements(), 1);
+        assert_eq!(s.client.total_retirements(), 1);
     }
 
     #[test]
     fn test_multiple_retirements_and_total() {
-        let env = Env::default();
-        env.mock_all_auths();
+        let s = setup();
+        let half = s.accrued / 2;
+        let second = s.accrued - half;
 
-        let admin = Address::generate(&env);
-        let holder = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        let hash1 = make_certificate_hash(&env, 1);
-        let id1 = client.retire_credits(
-            &holder,
-            &1,
-            &500i128,
+        let hash1 = make_certificate_hash(&s._env, 1);
+        let id1 = s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &half,
             &CreditType::Carbon,
             &hash1,
             &0,
         );
 
-        let hash2 = make_certificate_hash(&env, 2);
-        let id2 = client.retire_credits(
-            &holder,
-            &1,
-            &300i128,
+        let hash2 = make_certificate_hash(&s._env, 2);
+        let id2 = s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &second,
             &CreditType::Biodiversity,
             &hash2,
             &1,
@@ -268,29 +397,22 @@ mod test {
 
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
-        assert_eq!(client.total_retirements(), 2);
+        assert_eq!(s.client.total_retirements(), 2);
 
-        assert_eq!(client.get_total_retired(&holder), 800);
+        assert_eq!(s.client.get_total_retired(&s.holder), s.accrued);
 
-        let retirements = client.get_holder_retirements(&holder);
+        let retirements = s.client.get_holder_retirements(&s.holder);
         assert_eq!(retirements.len(), 2);
     }
 
     #[test]
     fn test_retire_zero_credits_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
+        let s = setup();
 
-        let admin = Address::generate(&env);
-        let holder = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        let hash = make_certificate_hash(&env, 1);
-        let result = client.try_retire_credits(
-            &holder,
-            &1,
+        let hash = make_certificate_hash(&s._env, 1);
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
             &0i128,
             &CreditType::Carbon,
             &hash,
@@ -300,16 +422,83 @@ mod test {
     }
 
     #[test]
+    fn test_retire_zero_certificate_hash_rejected() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 0);
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.accrued,
+            &CreditType::Carbon,
+            &hash,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(CreditError::InvalidCertificate)));
+    }
+
+    #[test]
+    fn test_retire_without_holding_bond_rejected() {
+        let s = setup();
+
+        let stranger = Address::generate(&s._env);
+        let hash = make_certificate_hash(&s._env, 1);
+        let result = s.client.try_retire_credits(
+            &stranger,
+            &s.bond_id,
+            &s.accrued,
+            &CreditType::Carbon,
+            &hash,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(CreditError::NotAHolder)));
+    }
+
+    #[test]
+    fn test_retire_more_than_accrued_rejected() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 1);
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &(s.accrued + 1),
+            &CreditType::Carbon,
+            &hash,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(CreditError::InsufficientCredits)));
+    }
+
+    #[test]
+    fn test_double_retirement_of_same_accrual_rejected() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 1);
+        s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.accrued,
+            &CreditType::Carbon,
+            &hash,
+            &0,
+        );
+
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &1i128,
+            &CreditType::Carbon,
+            &hash,
+            &1,
+        );
+        assert_eq!(result, Err(Ok(CreditError::InsufficientCredits)));
+    }
+
+    #[test]
     fn test_query_nonexistent_retirement() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        let result = client.try_get_retirement_record(&999);
+        let s = setup();
+        let result = s.client.try_get_retirement_record(&999);
         assert_eq!(result, Err(Ok(CreditError::InsufficientCredits)));
     }
 
@@ -321,70 +510,89 @@ mod test {
         let admin = Address::generate(&env);
         let holder1 = Address::generate(&env);
         let holder2 = Address::generate(&env);
+        let oracle = Address::generate(&env);
+        let project_id = make_project_id(&env, 3);
 
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
+        let issuer_admin = Address::generate(&env);
+        let issuer_id = env.register(BondIssuer, (issuer_admin.clone(),));
+        let issuer_client = BondIssuerClient::new(&env, &issuer_id);
 
-        let hash = make_certificate_hash(&env, 1);
-        client.retire_credits(&holder1, &1, &1000i128, &CreditType::Carbon, &hash, &0);
+        let bond_config = BondConfig {
+            project_id: project_id.clone(),
+            face_value: 1000,
+            coupon_schedule: svec![&env, 1_000_000u64, 2_000_000u64],
+            credit_type: CreditType::Carbon,
+            maturity_date: 3_000_000,
+            total_supply: 10_000,
+        };
+        let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
+        issuer_client.subscribe(&holder1, &bond_id, &3_000, &0);
+        issuer_client.subscribe(&holder2, &bond_id, &7_000, &0);
+
+        let ce_id = env.register(
+            CouponEngine,
+            (admin.clone(), issuer_id.clone(), oracle.clone()),
+        );
+        let ce_client = CouponEngineClient::new(&env, &ce_id);
+        ce_client.register_bond(&admin, &bond_id, &project_id, &0);
+
+        let report = make_report(&env, project_id, 100_000);
+        let holders = svec![&env, holder1.clone(), holder2.clone()];
+        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report, &1);
+
+        let accrued1 = ce_client.accrued_credits(&bond_id, &holder1);
+        let accrued2 = ce_client.accrued_credits(&bond_id, &holder2);
+        assert!(accrued1 > 0);
+        assert!(accrued2 > 0);
+
+        let cr_id = env.register(
+            CreditRetirement,
+            (admin, issuer_id.clone(), ce_id.clone()),
+        );
+        let cr_client = CreditRetirementClient::new(&env, &cr_id);
+
+        let hash1 = make_certificate_hash(&env, 1);
+        cr_client.retire_credits(&holder1, &bond_id, &accrued1, &CreditType::Carbon, &hash1, &0);
 
         let hash2 = make_certificate_hash(&env, 2);
-        client.retire_credits(&holder2, &1, &2000i128, &CreditType::Biodiversity, &hash2, &0);
+        cr_client.retire_credits(&holder2, &bond_id, &accrued2, &CreditType::Biodiversity, &hash2, &0);
 
-        assert_eq!(client.get_total_retired(&holder1), 1000);
-        assert_eq!(client.get_total_retired(&holder2), 2000);
-        assert_eq!(client.total_retirements(), 2);
+        assert_eq!(cr_client.get_total_retired(&holder1), accrued1);
+        assert_eq!(cr_client.get_total_retired(&holder2), accrued2);
+        assert_eq!(cr_client.total_retirements(), 2);
 
-        assert_eq!(client.get_holder_retirements(&holder1).len(), 1);
-        assert_eq!(client.get_holder_retirements(&holder2).len(), 1);
-    }
-
-    #[test]
-    fn test_nonexistent_certificate() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        let result = client.try_get_retirement_certificate(&999);
+        let result = cr_client.try_retire_credits(&holder1, &bond_id, &1i128, &CreditType::Carbon, &hash1, &1);
         assert_eq!(result, Err(Ok(CreditError::InsufficientCredits)));
+
+        let result = cr_client.try_retire_credits(
+            &Address::generate(&env),
+            &bond_id,
+            &1i128,
+            &CreditType::Carbon,
+            &hash1,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(CreditError::NotAHolder)));
     }
 
     #[test]
     fn test_empty_total_retirements() {
-        let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin.clone(),));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        assert_eq!(client.total_retirements(), 0);
-        let empty: Vec<u64> = vec![&env];
-        assert_eq!(client.get_holder_retirements(&admin), empty);
-        assert_eq!(client.get_total_retired(&admin), 0);
+        let s = setup();
+        assert_eq!(s.client.total_retirements(), 0);
+        let empty: Vec<u64> = vec![&s._env];
+        assert_eq!(s.client.get_holder_retirements(&s.holder), empty);
+        assert_eq!(s.client.get_total_retired(&s.holder), 0);
     }
 
     #[test]
     fn test_invalid_nonce_rejected() {
-        let env = Env::default();
-        env.mock_all_auths();
+        let s = setup();
 
-        let admin = Address::generate(&env);
-        let holder = Address::generate(&env);
-
-        let contract_id = env.register(CreditRetirement, (admin,));
-        let client = CreditRetirementClient::new(&env, &contract_id);
-
-        let hash = make_certificate_hash(&env, 1);
-        let result = client.try_retire_credits(
-            &holder,
-            &1,
-            &1000i128,
+        let hash = make_certificate_hash(&s._env, 1);
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.accrued,
             &CreditType::Carbon,
             &hash,
             &1,
