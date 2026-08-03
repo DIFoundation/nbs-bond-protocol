@@ -277,6 +277,18 @@ impl OracleConsumer {
     ) -> Result<(), OracleError> {
         caller.require_auth();
 
+        let is_admin = require_admin(&env, &caller).is_ok();
+        if !is_admin {
+            let p: OracleProvider = env
+                .storage()
+                .instance()
+                .get(&DataKey::Provider(caller.clone()))
+                .ok_or(OracleError::Unauthorized)?;
+            if !p.active {
+                return Err(OracleError::Unauthorized);
+            }
+        }
+
         let expected_nonce = get_nonce(&env, &caller);
         if nonce != expected_nonce {
             return Err(OracleError::InvalidNonce);
@@ -814,6 +826,72 @@ mod test {
             &0,
         );
         assert_eq!(result, Err(Ok(OracleError::ReportAlreadyVerified)));
+    }
+
+    #[test]
+    fn test_verify_report_by_any_address_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let stranger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        let result = client.try_verify_report(&stranger, &report_id, &0);
+        assert_eq!(result, Err(Ok(OracleError::Unauthorized)));
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Pending);
+    }
+
+    #[test]
+    fn test_verify_report_by_provider() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider_a = Address::generate(&env);
+        let provider_b = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider_a, &Symbol::new(&env, "verra_vcs"), &0);
+        client.register_provider(&admin, &provider_b, &Symbol::new(&env, "satellite"), &1);
+
+        let report_id = client.submit_report(
+            &provider_a,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        client.verify_report(&provider_b, &report_id, &0);
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Verified);
     }
 
     #[test]
