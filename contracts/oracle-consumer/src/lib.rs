@@ -346,7 +346,7 @@ impl OracleConsumer {
             .instance()
             .get(&DataKey::ChallengeWindow)
             .unwrap_or(CHALLENGE_WINDOW_SECONDS);
-        if now - report.submitted_at > window {
+        if now.saturating_sub(report.submitted_at) > window {
             return Err(OracleError::ChallengeWindowExpired);
         }
 
@@ -659,6 +659,46 @@ mod test {
             &0,
         );
         assert_eq!(result, Err(Ok(OracleError::ChallengeWindowExpired)));
+    }
+
+    #[test]
+    fn test_challenge_allowed_when_clock_precedes_submission() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        env.ledger().set_timestamp(1_000_000);
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1_000_100u64,
+            &1_000_200u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        env.ledger().set_timestamp(900_000);
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        let challenged = client.get_report(&report_id);
+        assert_eq!(challenged.status, ReportStatus::Challenged);
     }
 
     #[test]
