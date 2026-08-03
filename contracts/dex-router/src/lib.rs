@@ -66,7 +66,7 @@ fn set_nonce(env: &Env, addr: &Address, nonce: u64) {
 }
 
 fn is_order_expired(env: &Env, order: &Order) -> bool {
-    env.ledger().timestamp() > order.expires_at
+    env.ledger().timestamp() >= order.expires_at
 }
 
 fn verify_holder_balance(
@@ -138,7 +138,7 @@ impl DEXRouter {
         set_nonce(&env, &seller, expected_nonce + 1);
 
         if amount <= 0 || price_per_token <= 0 {
-            return Err(DEXError::InsufficientBalance);
+            return Err(DEXError::ZeroAmount);
         }
 
         verify_holder_balance(&env, &seller, bond_id, amount)?;
@@ -275,6 +275,10 @@ impl DEXRouter {
 
         if is_order_expired(&env, &order) {
             return Err(DEXError::OrderExpired);
+        }
+
+        if amount <= 0 {
+            return Err(DEXError::ZeroAmount);
         }
 
         if amount > order.amount {
@@ -823,5 +827,100 @@ mod test {
 
         let result = client.try_execute_purchase(&buyer, &order_id, &50i128, &500i128, &0);
         assert_eq!(result, Err(Ok(DEXError::InsufficientBalance)));
+    }
+
+    #[test]
+    fn test_purchase_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1_000i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &0i128, &0);
+        assert_eq!(result, Err(Ok(DEXError::ZeroAmount)));
+
+        let order = client.get_order(&order_id);
+        assert_eq!(order.amount, 1_000);
+        assert_eq!(order.status, OrderStatus::Open);
+    }
+
+    #[test]
+    fn test_list_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        let result = client.try_list_bond_tokens(
+            &seller,
+            &bond_id,
+            &0i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(DEXError::ZeroAmount)));
+    }
+
+    #[test]
+    fn test_order_expired_at_expiry_timestamp() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        env.ledger().set_timestamp(1_000_000);
+
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1_000i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &100u64,
+            &0,
+        );
+
+        env.ledger().set_timestamp(1_000_100);
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &500i128, &0);
+        assert_eq!(result, Err(Ok(DEXError::OrderExpired)));
     }
 }
