@@ -301,6 +301,13 @@ impl BondIssuer {
         Ok(state.total_subscribed)
     }
 
+    pub fn bond_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::BondCount)
+            .unwrap_or(0)
+    }
+
     pub fn mature_bond(
         env: Env,
         caller: Address,
@@ -574,5 +581,19 @@ mod test {
 
         client.subscribe(&user, &bond_id, &4000, &0);
         assert_eq!(client.total_subscribed(&bond_id), 4000);
+    }
+
+    #[test]
+    fn test_bond_count() {
+        let (env, client, admin, _user) = setup();
+        assert_eq!(client.bond_count(), 0);
+
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+        assert_eq!(bond_id, 1);
+        assert_eq!(client.bond_count(), 1);
+
+        client.issue_bond(&admin, &config, &1);
+        assert_eq!(client.bond_count(), 2);
     }
 }
