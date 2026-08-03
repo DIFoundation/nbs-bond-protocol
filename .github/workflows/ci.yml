@@ -100,4 +100,5 @@ jobs:
       - name: Deploy contracts to testnet
         run: ./scripts/deploy-testnet.sh
         env:
-          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_TESTNET_SECRET }}
+          STELLAR_PUBLIC_KEY: ${{ secrets.STELLAR_TESTNET_PUBLIC }}
+          SOROBAN_SECRET_KEY: ${{ secrets.STELLAR_TESTNET_SECRET }}

@@ -38,13 +38,18 @@ declare -A PKG_MAP=(
 )
 
 declare -A ENV_MAP=(
-  ["project-registry"]="CONTRACT_PROJECT_REGISTRY"
-  ["bond-issuer"]="CONTRACT_BOND_ISSUER"
-  ["coupon-engine"]="CONTRACT_COUPON_ENGINE"
-  ["oracle-consumer"]="CONTRACT_ORACLE_CONSUMER"
-  ["dex-router"]="CONTRACT_DEX_ROUTER"
-  ["credit-retirement"]="CONTRACT_CREDIT_RETIREMENT"
+  ["project-registry"]="PROJECT_REGISTRY_ADDRESS"
+  ["bond-issuer"]="BOND_ISSUER_ADDRESS"
+  ["coupon-engine"]="COUPON_ENGINE_ADDRESS"
+  ["oracle-consumer"]="ORACLE_CONSUMER_ADDRESS"
+  ["dex-router"]="DEX_ROUTER_ADDRESS"
+  ["credit-retirement"]="CREDIT_RETIREMENT_ADDRESS"
 )
+
+# Read a value back from the env file (updated as deployment progresses)
+get_env_value() {
+  grep "^${1}=" "$ENV_FILE" 2>/dev/null | cut -d= -f2
+}
 
 echo ""
 echo "⚠️  ⚠️  ⚠️  MAINNET DEPLOYMENT ⚠️  ⚠️  ⚠️"
@@ -92,10 +97,19 @@ for contract in "${CONTRACTS[@]}"; do
   echo "  Address: ${address}"
 
   echo "  Initializing..."
+  constructor_args=(--arg "$ADMIN_ADDRESS")
+  case "$contract" in
+    dex-router|credit-retirement)
+      constructor_args+=(
+        --arg "$(get_env_value BOND_ISSUER_ADDRESS)"
+        --arg "$(get_env_value COUPON_ENGINE_ADDRESS)"
+      )
+      ;;
+  esac
   soroban contract invoke \
     --id "$address" \
     --fn __constructor \
-    --arg "$ADMIN_ADDRESS" \
+    "${constructor_args[@]}" \
     --network "$NETWORK"
 
   env_key="${ENV_MAP[$contract]}"

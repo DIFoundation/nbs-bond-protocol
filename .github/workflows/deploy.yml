@@ -25,4 +25,5 @@ jobs:
             ./scripts/deploy-testnet.sh
           fi
         env:
-          STELLAR_SECRET_KEY: ${{ secrets.STELLAR_${{ github.event.inputs.network == 'mainnet' && 'MAINNET' || 'TESTNET' }}_SECRET }}
+          STELLAR_PUBLIC_KEY: ${{ secrets.STELLAR_${{ github.event.inputs.network == 'mainnet' && 'MAINNET' || 'TESTNET' }}_PUBLIC }}
+          SOROBAN_SECRET_KEY: ${{ secrets.STELLAR_${{ github.event.inputs.network == 'mainnet' && 'MAINNET' || 'TESTNET' }}_SECRET }}

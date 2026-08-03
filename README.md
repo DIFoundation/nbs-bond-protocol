@@ -618,27 +618,32 @@ Create `api/.env` from the provided template:
 # ── Stellar Network ──────────────────────────────────────────────
 STELLAR_NETWORK=testnet                        # testnet | mainnet
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
-STELLAR_SECRET_KEY=S...                        # Issuer/admin secret key
-STELLAR_PUBLIC_KEY=G...                        # Corresponding public key
+SOROBAN_RPC_URL=https://soroban-testnet.stellar.org
+STELLAR_PUBLIC_KEY=G...                        # Admin public key (used by deploy scripts)
+
+# ── Signer Keys (used by the API to build transactions) ──────────
+ADMIN_SECRET_KEY=S...                          # Issuer/admin secret key
+USER_SECRET_KEY=S...                           # Regular user (developer) secret key
+INVESTOR_SECRET_KEY=S...                       # Investor secret key
 
 # ── Contract Addresses (populated after deployment) ──────────────
-CONTRACT_BOND_ISSUER=C...
-CONTRACT_COUPON_ENGINE=C...
-CONTRACT_ORACLE_CONSUMER=C...
-CONTRACT_DEX_ROUTER=C...
-CONTRACT_PROJECT_REGISTRY=C...
-CONTRACT_CREDIT_RETIREMENT=C...
+BOND_ISSUER_ADDRESS=C...
+COUPON_ENGINE_ADDRESS=C...
+ORACLE_CONSUMER_ADDRESS=C...
+DEX_ROUTER_ADDRESS=C...
+PROJECT_REGISTRY_ADDRESS=C...
+CREDIT_RETIREMENT_ADDRESS=C...
 
 # ── IPFS / Pinata ────────────────────────────────────────────────
 IPFS_API_URL=https://api.pinata.cloud
 IPFS_API_KEY=your_pinata_api_key
-IPFS_SECRET_API_KEY=your_pinata_secret_key
+IPFS_SECRET_KEY=your_pinata_secret_key
 IPFS_GATEWAY=https://gateway.pinata.cloud/ipfs/
 
 # ── Oracle ───────────────────────────────────────────────────────
-ORACLE_PROVIDER_URL=https://oracle.your-provider.com
-ORACLE_API_KEY=your_oracle_api_key
-ORACLE_POLLING_INTERVAL_MS=300000              # 5 minutes
+# Whitelisted provider addresses allowed to submit reports
+ORACLE_PROVIDER_WHITELIST=G...                 # Comma-separated list of provider addresses
+DEFAULT_PROVIDER_ADDRESS=G...                  # Default provider used by the scheduler
 
 # ── Authentication ───────────────────────────────────────────────
 JWT_SECRET=your_very_long_jwt_secret_here
@@ -866,16 +871,16 @@ ng e2e
 # Deploy all contracts to Stellar testnet
 ./scripts/deploy-testnet.sh
 
-# The script will output contract addresses — add them to api/.env
-# CONTRACT_BOND_ISSUER=C...
-# CONTRACT_COUPON_ENGINE=C...
+# The script writes contract addresses into .env automatically
+# BOND_ISSUER_ADDRESS=C...
+# COUPON_ENGINE_ADDRESS=C...
 # etc.
 ```
 
 ### Mainnet Deployment
 
 ```bash
-# Requires STELLAR_SECRET_KEY in environment with sufficient XLM
+# Requires STELLAR_PUBLIC_KEY in environment with sufficient XLM
 # Always run a full audit before mainnet deployment
 
 ./scripts/deploy-mainnet.sh

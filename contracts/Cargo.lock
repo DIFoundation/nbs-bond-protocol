@@ -958,6 +958,8 @@ dependencies = [
 name = "nbbs-credit-retirement"
 version = "0.1.0"
 dependencies = [
+ "nbbs-bond-issuer",
+ "nbbs-coupon-engine",
  "nbbs-shared",
  "soroban-sdk",
 ]
