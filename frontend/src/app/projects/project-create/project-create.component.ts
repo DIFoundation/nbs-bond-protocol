@@ -60,7 +60,22 @@ import { ApiService } from '../../shared/services/api.service';
           </div>
         </div>
 
-        <input type="hidden" formControlName="nonce" />
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="locationLat">Latitude</label>
+            <input id="locationLat" type="number" step="0.000001" class="form-input" formControlName="locationLat" placeholder="-3.4653" />
+            @if (form.get('locationLat')?.invalid && form.get('locationLat')?.touched) {
+              <span class="form-error">Latitude is required</span>
+            }
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="locationLng">Longitude</label>
+            <input id="locationLng" type="number" step="0.000001" class="form-input" formControlName="locationLng" placeholder="-62.2159" />
+            @if (form.get('locationLng')?.invalid && form.get('locationLng')?.touched) {
+              <span class="form-error">Longitude is required</span>
+            }
+          </div>
+        </div>
 
         <div class="form-actions">
           <a class="btn btn-outline" routerLink="/projects">Cancel</a>
@@ -108,7 +123,8 @@ export class ProjectCreateComponent {
     country: ['', Validators.required],
     totalAreaHa: [null, [Validators.required, Validators.min(0.01)]],
     carbonSequestrationEstimate: [null, [Validators.required, Validators.min(0.01)]],
-    nonce: [Date.now()],
+    locationLat: [null, Validators.required],
+    locationLng: [null, Validators.required],
   });
 
   onSubmit(): void {
@@ -116,9 +132,15 @@ export class ProjectCreateComponent {
     this.submitting.set(true);
     this.error.set('');
 
-    this.form.patchValue({ nonce: Date.now() });
+    const formValue = { ...this.form.value };
+    formValue.location = {
+      lat: Number(formValue.locationLat),
+      lng: Number(formValue.locationLng),
+    };
+    delete formValue.locationLat;
+    delete formValue.locationLng;
 
-    this.apiService.registerProject(this.form.value).subscribe({
+    this.apiService.registerProject(formValue).subscribe({
       next: (project) => {
         this.router.navigate(['/projects', project.id]);
       },

@@ -267,8 +267,8 @@ export class MarketplaceListComponent implements OnInit {
     this.loading.set(true);
     this.error.set('');
     this.apiService.getOrders(this.filterBondId() ?? undefined).subscribe({
-      next: (orders) => {
-        this.orders.set(orders);
+      next: (res) => {
+        this.orders.set(res.data);
         this.loading.set(false);
       },
       error: () => {
@@ -308,7 +308,6 @@ export class MarketplaceListComponent implements OnInit {
       orderId: order.id,
       amount: this.buyAmount,
       maxPrice: this.buyMaxPrice,
-      nonce: Date.now(),
     }).subscribe({
       next: () => {
         this.buyOrderId.set(null);

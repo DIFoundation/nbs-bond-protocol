@@ -209,7 +209,7 @@ export class BondDetailComponent implements OnInit {
     this.subscribeSuccess.set(false);
     this.subscribeError.set('');
 
-    this.apiService.subscribeToBond(b.id, this.subscribeAmount, Date.now()).subscribe({
+    this.apiService.subscribeToBond(b.id, this.subscribeAmount).subscribe({
       next: (res) => {
         this.subscribeSuccess.set(true);
         this.subscribeTx.set(res.transactionHash);

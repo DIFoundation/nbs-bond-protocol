@@ -54,7 +54,7 @@ export interface CreateProjectDto {
   totalAreaHa: number;
   carbonSequestrationEstimate: number;
   metadataIpfsHash?: string;
-  nonce: number;
+  nonce?: number;
 }
 
 export interface ListBondDto {
@@ -62,12 +62,12 @@ export interface ListBondDto {
   amount: number;
   pricePerToken: number;
   quoteAsset: 'USDC' | 'XLM';
-  nonce: number;
+  nonce?: number;
 }
 
 export interface BuyBondDto {
   orderId: number;
   amount: number;
   maxPrice: number;
-  nonce: number;
+  nonce?: number;
 }

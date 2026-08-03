@@ -2,6 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { AuthService } from '../../auth/auth.service';
+import { WalletService } from '../../auth/wallet.service';
 import {
   Bond, Project, Order, PaginatedResponse,
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
@@ -11,10 +12,18 @@ import {
 export class ApiService {
   private readonly http = inject(HttpClient);
   private readonly authService = inject(AuthService);
+  private readonly walletService = inject(WalletService);
 
   private headers(): HttpHeaders {
     const token = this.authService.token();
-    return new HttpHeaders(token ? { Authorization: `Bearer ${token}` } : {});
+    const walletAddress = this.walletService.address();
+    let headers = new HttpHeaders(
+      token ? { Authorization: `Bearer ${token}` } : {},
+    );
+    if (walletAddress) {
+      headers = headers.set('x-wallet-address', walletAddress);
+    }
+    return headers;
   }
 
   getBonds(page = 1, limit = 20): Observable<PaginatedResponse<Bond>> {
@@ -32,10 +41,11 @@ export class ApiService {
     return this.http.post<Bond>('/api/bonds', data, { headers: this.headers() });
   }
 
-  subscribeToBond(id: number, amount: number, nonce: number): Observable<SubscriptionResponse> {
+  subscribeToBond(id: number, amount: number): Observable<SubscriptionResponse> {
+    const investorAddress = this.walletService.address();
     return this.http.post<SubscriptionResponse>(
       `/api/bonds/${id}/subscribe`,
-      { amount, nonce },
+      { amount, investorAddress },
       { headers: this.headers() },
     );
   }
@@ -54,10 +64,10 @@ export class ApiService {
     return this.http.post<Project>('/api/projects', data, { headers: this.headers() });
   }
 
-  getOrders(bondId?: number): Observable<Order[]> {
+  getOrders(bondId?: number): Observable<PaginatedResponse<Order>> {
     const params: any = {};
     if (bondId) params.bondId = bondId;
-    return this.http.get<Order[]>('/api/marketplace/orders', {
+    return this.http.get<PaginatedResponse<Order>>('/api/marketplace/orders', {
       params, headers: this.headers(),
     });
   }

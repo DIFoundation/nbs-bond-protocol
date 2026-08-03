@@ -29,6 +29,7 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": { "proxyConfig": "proxy.conf.json" },
           "configurations": { "production": { "buildTarget": "nbs-bond-frontend:build:production" }, "development": { "buildTarget": "nbs-bond-frontend:build:development" } },
           "defaultConfiguration": "development"
         },

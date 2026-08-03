@@ -63,8 +63,6 @@ import { Bond } from '../../shared/interfaces/bond.interface';
           </div>
         </div>
 
-        <input type="hidden" formControlName="nonce" />
-
         <div class="form-actions">
           <a class="btn btn-outline" routerLink="/marketplace">Cancel</a>
           <button type="submit" class="btn btn-primary" [disabled]="form.invalid || submitting()">
@@ -113,7 +111,6 @@ export class MarketplaceSellComponent implements OnInit {
     pricePerToken: [null, [Validators.required, Validators.min(0.01)]],
     quoteAsset: ['USDC', Validators.required],
     expiresAfterSeconds: [604800],
-    nonce: [Date.now()],
   });
 
   ngOnInit(): void {
@@ -131,7 +128,6 @@ export class MarketplaceSellComponent implements OnInit {
     this.submitting.set(true);
     this.error.set('');
 
-    this.form.patchValue({ nonce: Date.now() });
     const formValue = { ...this.form.value };
     if (!formValue.expiresAfterSeconds) delete formValue.expiresAfterSeconds;
 

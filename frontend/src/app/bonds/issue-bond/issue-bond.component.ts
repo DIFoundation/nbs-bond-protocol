@@ -64,7 +64,13 @@ import { ApiService } from '../../shared/services/api.service';
           </div>
         </div>
 
-        <input type="hidden" formControlName="nonce" />
+        <div class="form-group">
+          <label class="form-label" for="couponSchedule">Coupon Schedule</label>
+          <input id="couponSchedule" class="form-input" formControlName="couponSchedule" placeholder="Comma-separated epoch seconds, e.g. 1750000000, 1781536000" />
+          @if (form.get('couponSchedule')?.invalid && form.get('couponSchedule')?.touched) {
+            <span class="form-error">Enter at least one coupon date</span>
+          }
+        </div>
 
         <div class="form-actions">
           <a class="btn btn-outline" routerLink="/bonds">Cancel</a>
@@ -114,7 +120,7 @@ export class IssueBondComponent {
     creditType: ['Carbon', Validators.required],
     totalSupply: [1000, [Validators.required, Validators.min(1)]],
     maturityDate: ['', Validators.required],
-    nonce: [Date.now()],
+    couponSchedule: ['', Validators.required],
   });
 
   onSubmit(): void {
@@ -123,8 +129,12 @@ export class IssueBondComponent {
     this.error.set('');
     this.success.set(false);
 
-    this.form.patchValue({ nonce: Date.now() });
     const formValue = { ...this.form.value };
+    formValue.maturityDate = new Date(formValue.maturityDate).getTime();
+    formValue.couponSchedule = String(formValue.couponSchedule || '')
+      .split(',')
+      .map((v: string) => Number(v.trim()))
+      .filter((v: number) => Number.isFinite(v) && v > 0);
     formValue.maturityDate = new Date(formValue.maturityDate).getTime();
 
     this.apiService.issueBond(formValue).subscribe({
