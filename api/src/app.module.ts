@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_INTERCEPTOR } from '@nestjs/core';
+import { CommonModule } from './common/common.module';
 import { BondsModule } from './bonds/bonds.module';
 import { ProjectsModule } from './projects/projects.module';
 import { OracleModule } from './oracle/oracle.module';
@@ -11,6 +12,7 @@ import { RequestLoggingInterceptor } from './common/interceptors/request-logging
 
 @Module({
   imports: [
+    CommonModule,
     BondsModule,
     ProjectsModule,
     OracleModule,

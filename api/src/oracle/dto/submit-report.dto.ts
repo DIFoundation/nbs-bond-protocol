@@ -26,5 +26,6 @@ export class SubmitReportDto {
   evidenceHash?: string;
 
   @IsNumber()
-  nonce: number;
+  @IsOptional()
+  nonce?: number;
 }

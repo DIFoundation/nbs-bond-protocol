@@ -122,13 +122,13 @@ describe('API validation (e2e)', () => {
         .expect(400);
     });
 
-    it('rejects a missing nonce', () => {
+    it('accepts a payload without a client nonce (server-managed)', () => {
       const missing: Partial<SubscribeDto> = { ...validSubscribe };
       delete missing.nonce;
       return request(app.getHttpServer())
         .post('/bonds/1/subscribe')
         .send(missing)
-        .expect(400);
+        .expect(201);
     });
   });
 });

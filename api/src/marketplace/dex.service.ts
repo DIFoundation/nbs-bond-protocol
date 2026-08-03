@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
+import { NonceService } from '../common/services/nonce.service';
 import { ListBondDto } from './dto/list-bond.dto';
 import { BuyBondDto } from './dto/buy-bond.dto';
 import {
@@ -20,6 +21,7 @@ export class DexService {
   constructor(
     private readonly contractService: ContractService,
     private readonly stellarService: StellarService,
+    private readonly nonceService: NonceService,
   ) {
     this.redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
     this.redis.connect().catch(() => {});
@@ -90,6 +92,7 @@ export class DexService {
 
   async listBondTokens(dto: ListBondDto, sellerAddress: string): Promise<OrderResponse> {
     const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), sellerAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'list_bond_tokens', adminSecret,
@@ -101,7 +104,7 @@ export class DexService {
         nativeToScVal(dto.quoteAsset, { type: 'symbol' }),
         nativeToScVal(BigInt(dto.expiresAfterSeconds || 604800), { type: 'u64' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     const data = scValToNative(result) as any[];
@@ -122,6 +125,7 @@ export class DexService {
 
   async buyBondTokens(dto: BuyBondDto, buyerAddress: string): Promise<OrderResponse> {
     const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), buyerAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'execute_purchase', adminSecret,
@@ -131,7 +135,7 @@ export class DexService {
         nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
         nativeToScVal(BigInt(dto.maxPrice), { type: 'i128' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     const data = scValToNative(result) as any[];
@@ -152,6 +156,7 @@ export class DexService {
 
   async cancelOrder(orderId: number, callerAddress: string): Promise<void> {
     const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
 
     await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'cancel_listing', adminSecret,
@@ -159,7 +164,7 @@ export class DexService {
         Address.fromString(callerAddress).toScVal(),
         nativeToScVal(BigInt(orderId), { type: 'u64' }),
       ],
-      await this.getNonce(callerAddress),
+      nonce,
     );
 
     await this.redis.del(`orders:*`);
@@ -194,17 +199,5 @@ export class DexService {
 
   private getAdminSecret(): string {
     return process.env.ADMIN_SECRET_KEY || '';
-  }
-
-  private async getNonce(address: string): Promise<number> {
-    try {
-      const key = `nonce:${address}`;
-      const stored = await this.redis.get(key);
-      const next = (stored ? parseInt(stored, 10) : 0) + 1;
-      await this.redis.set(key, next.toString());
-      return next;
-    } catch {
-      return Math.floor(Date.now() / 1000);
-    }
   }
 }

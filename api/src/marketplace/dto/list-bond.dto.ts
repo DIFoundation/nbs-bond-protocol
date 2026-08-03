@@ -22,5 +22,6 @@ export class ListBondDto {
   expiresAfterSeconds?: number = 604800;
 
   @IsNumber()
-  nonce: number;
+  @IsOptional()
+  nonce?: number;
 }

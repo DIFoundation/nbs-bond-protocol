@@ -51,5 +51,6 @@ export class CreateProjectDto {
   description?: string;
 
   @IsNumber()
-  nonce: number;
+  @IsOptional()
+  nonce?: number;
 }

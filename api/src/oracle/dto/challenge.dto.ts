@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber } from 'class-validator';
+import { IsString, IsNotEmpty, IsNumber, IsOptional } from 'class-validator';
 
 export class ChallengeDto {
   @IsString()
@@ -10,5 +10,6 @@ export class ChallengeDto {
   reason: string;
 
   @IsNumber()
-  nonce: number;
+  @IsOptional()
+  nonce?: number;
 }

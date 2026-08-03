@@ -1,4 +1,4 @@
-import { IsNumber, IsPositive, IsString } from 'class-validator';
+import { IsNumber, IsPositive, IsString, IsOptional } from 'class-validator';
 import { IsStellarAddress } from '../../common/decorators/is-stellar-address.decorator';
 
 export class SubscribeDto {
@@ -6,8 +6,9 @@ export class SubscribeDto {
   @IsPositive()
   amount: number;
 
+  @IsOptional()
   @IsNumber()
-  nonce: number;
+  nonce?: number;
 
   @IsString()
   @IsStellarAddress()

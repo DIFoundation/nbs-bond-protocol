@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { ContractService, ContractCallOptions } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
+import { NonceService } from '../common/services/nonce.service';
 import { xdr, nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
 import { createClient, RedisClientType } from '@redis/client';
 import { CreateBondDto } from './dto/create-bond.dto';
@@ -25,6 +26,7 @@ export class BondsService {
   constructor(
     private readonly contractService: ContractService,
     private readonly stellarService: StellarService,
+    private readonly nonceService: NonceService,
   ) {
     this.redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
     this.redis.connect().catch(() => {});
@@ -33,7 +35,7 @@ export class BondsService {
   async create(dto: CreateBondDto): Promise<BondResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.getNonce(adminAddress);
+    const nonce = await this.nonceService.next(BOND_ISSUER(), adminAddress);
 
     const configScVal = this.encodeBondConfig(dto);
 
@@ -95,6 +97,7 @@ export class BondsService {
 
   async subscribe(id: number, dto: SubscribeDto): Promise<SubscriptionResponse> {
     const investorSecret = process.env.INVESTOR_SECRET_KEY || '';
+    const nonce = await this.nonceService.next(BOND_ISSUER(), dto.investorAddress);
     const { result, transactionHash } = await this.contractService.invokeContractMethod(
       BOND_ISSUER(), 'subscribe', investorSecret,
       [
@@ -102,7 +105,7 @@ export class BondsService {
         nativeToScVal(BigInt(id), { type: 'u64' }),
         nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     await this.redis.del(`bond:${id}`);
@@ -132,7 +135,7 @@ export class BondsService {
   async distributeCoupon(id: number, dto: DistributeCouponDto): Promise<CouponDistributionResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.getNonce(adminAddress);
+    const nonce = await this.nonceService.next(COUPON_ENGINE(), adminAddress);
 
     const holderAddresses = await this.redis.sMembers(`bond:${id}:holders`);
 
@@ -159,7 +162,7 @@ export class BondsService {
   async mature(id: number): Promise<BondResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.getNonce(adminAddress);
+    const nonce = await this.nonceService.next(BOND_ISSUER(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       BOND_ISSUER(), 'mature_bond', adminSecret,
@@ -219,18 +222,6 @@ export class BondsService {
       status: state[1] as BondStatusEnum,
       createdAt: new Date(Number(state[2]) * 1000).toISOString(),
     };
-  }
-
-  private async getNonce(address: string): Promise<number> {
-    try {
-      const key = `nonce:${address}`;
-      const stored = await this.redis.get(key);
-      const next = (stored ? parseInt(stored, 10) : 0) + 1;
-      await this.redis.set(key, next.toString());
-      return next;
-    } catch {
-      return Math.floor(Date.now() / 1000);
-    }
   }
 
   private getAdminSecret(): string {

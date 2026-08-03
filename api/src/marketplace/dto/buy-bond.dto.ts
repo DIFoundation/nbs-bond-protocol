@@ -1,4 +1,4 @@
-import { IsNumber, IsPositive } from 'class-validator';
+import { IsNumber, IsPositive, IsOptional } from 'class-validator';
 
 export class BuyBondDto {
   @IsNumber()
@@ -14,5 +14,6 @@ export class BuyBondDto {
   maxPrice: number;
 
   @IsNumber()
-  nonce: number;
+  @IsOptional()
+  nonce?: number;
 }

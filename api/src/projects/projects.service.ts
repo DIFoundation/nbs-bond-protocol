@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { IpfsService } from './ipfs.service';
+import { NonceService } from '../common/services/nonce.service';
 import { nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
 import { createClient, RedisClientType } from '@redis/client';
 import { CreateProjectDto } from './dto/create-project.dto';
@@ -17,6 +18,7 @@ export class ProjectsService {
     private readonly contractService: ContractService,
     private readonly stellarService: StellarService,
     private readonly ipfsService: IpfsService,
+    private readonly nonceService: NonceService,
   ) {
     this.redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
     this.redis.connect().catch(() => {});
@@ -40,6 +42,7 @@ export class ProjectsService {
     const ipfsHash = Buffer.from(ipfsResult.hash, 'hex');
 
     const ownerSecret = process.env.USER_SECRET_KEY || '';
+    const nonce = await this.nonceService.next(PROJECT_REGISTRY(), ownerAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       PROJECT_REGISTRY(), 'register_project', ownerSecret,
@@ -49,7 +52,7 @@ export class ProjectsService {
         nativeToScVal(dto.methodology, { type: 'symbol' }),
         nativeToScVal(dto.country, { type: 'symbol' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     const projectId = Number(scValToNative(result));
@@ -106,7 +109,7 @@ export class ProjectsService {
   async approve(id: number): Promise<ProjectResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.getNonce(adminAddress);
+    const nonce = await this.nonceService.next(PROJECT_REGISTRY(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       PROJECT_REGISTRY(), 'approve_project', adminSecret,
@@ -121,7 +124,7 @@ export class ProjectsService {
   async reject(id: number): Promise<ProjectResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
-    const nonce = await this.getNonce(adminAddress);
+    const nonce = await this.nonceService.next(PROJECT_REGISTRY(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       PROJECT_REGISTRY(), 'reject_project', adminSecret,
@@ -176,18 +179,6 @@ export class ProjectsService {
       carbonSequestrationEstimate: metadata.carbonSequestrationEstimate || 0,
       createdAt: new Date().toISOString(),
     };
-  }
-
-  private async getNonce(address: string): Promise<number> {
-    try {
-      const key = `nonce:${address}`;
-      const stored = await this.redis.get(key);
-      const next = (stored ? parseInt(stored, 10) : 0) + 1;
-      await this.redis.set(key, next.toString());
-      return next;
-    } catch {
-      return Math.floor(Date.now() / 1000);
-    }
   }
 
   private getAdminSecret(): string {

@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { IpfsService } from '../projects/ipfs.service';
+import { NonceService } from '../common/services/nonce.service';
 import { SubmitReportDto } from './dto/submit-report.dto';
 import { ChallengeDto } from './dto/challenge.dto';
 import { RegisterProviderDto } from './dto/register-provider.dto';
@@ -24,6 +25,7 @@ export class OracleService {
     private readonly contractService: ContractService,
     private readonly ipfsService: IpfsService,
     private readonly stellarService: StellarService,
+    private readonly nonceService: NonceService,
   ) {
     this.redis = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
     this.redis.connect().catch(() => {});
@@ -42,6 +44,7 @@ export class OracleService {
     });
 
     const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(ORACLE_CONSUMER(), providerAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'submit_report', adminSecret,
@@ -53,7 +56,7 @@ export class OracleService {
         nativeToScVal(dto.methodology, { type: 'symbol' }),
         nativeToScVal(ipfsResult.hash, { type: 'string' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     const reportId = Number(scValToNative(result));
@@ -116,6 +119,7 @@ export class OracleService {
 
   async challengeReport(reportId: number, dto: ChallengeDto, challengerAddress: string): Promise<ChallengeResponse> {
     const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(ORACLE_CONSUMER(), challengerAddress);
 
     await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'challenge_report', adminSecret,
@@ -125,7 +129,7 @@ export class OracleService {
         nativeToScVal(dto.counterEvidenceHash, { type: 'string' }),
         nativeToScVal(dto.reason, { type: 'string' }),
       ],
-      dto.nonce,
+      nonce,
     );
 
     return {
@@ -141,6 +145,7 @@ export class OracleService {
   async registerProvider(dto: RegisterProviderDto): Promise<ProviderResponse> {
     const adminSecret = this.getAdminSecret();
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
+    const nonce = await this.nonceService.next(ORACLE_CONSUMER(), adminAddress);
 
     await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'register_provider', adminSecret,
@@ -148,7 +153,7 @@ export class OracleService {
         Address.fromString(dto.providerAddress).toScVal(),
         nativeToScVal(dto.methodology, { type: 'symbol' }),
       ],
-      await this.getNonce(adminAddress),
+      nonce,
     );
 
     return {
@@ -195,17 +200,5 @@ export class OracleService {
 
   private getAdminSecret(): string {
     return process.env.ADMIN_SECRET_KEY || '';
-  }
-
-  private async getNonce(address: string): Promise<number> {
-    try {
-      const key = `nonce:${address}`;
-      const stored = await this.redis.get(key);
-      const next = (stored ? parseInt(stored, 10) : 0) + 1;
-      await this.redis.set(key, next.toString());
-      return next;
-    } catch {
-      return Math.floor(Date.now() / 1000);
-    }
   }
 }
