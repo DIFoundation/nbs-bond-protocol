@@ -38,7 +38,6 @@ export class DexService {
     if (cached) return JSON.parse(cached);
 
     const orders: OrderResponse[] = [];
-    let total = 0;
     let index = 1;
 
     while (true) {
@@ -48,30 +47,18 @@ export class DexService {
           method: 'get_order',
           args: [nativeToScVal(BigInt(index), { type: 'u64' })],
         });
-        const data = scValToNative(orderScVal) as any[];
-        const orderBondId = Number(data[2]);
-        const orderStatus = data[5] as string;
+        const order = this.decodeOrder(scValToNative(orderScVal) as any[]);
 
-        if (bondId && orderBondId !== bondId) {
+        if (bondId && order.bondId !== bondId) {
           index++;
           continue;
         }
-        if (status && orderStatus !== status) {
+        if (status && order.status !== status) {
           index++;
           continue;
         }
 
-        orders.push({
-          id: Number(data[0]),
-          seller: data[1] as string,
-          bondId: orderBondId,
-          amount: Number(data[3]),
-          pricePerToken: Number(data[4]),
-          quoteAsset: data[6] as 'USDC' | 'XLM',
-          status: orderStatus as OrderStatus,
-          createdAt: new Date(Number(data[7]) * 1000).toISOString(),
-        });
-        total++;
+        orders.push(order);
         index++;
       } catch {
         break;
@@ -83,7 +70,7 @@ export class DexService {
 
     const result = {
       data: paged,
-      meta: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 },
+      meta: { page, limit, total: orders.length, totalPages: Math.ceil(orders.length / limit) || 1 },
     };
 
     await this.redis.setEx(cacheKey, 30, JSON.stringify(result));
@@ -107,51 +94,28 @@ export class DexService {
       nonce,
     );
 
-    const data = scValToNative(result) as any[];
-
+    const orderId = Number(scValToNative(result));
     await this.redis.del(`orders:*`);
-
-    return {
-      id: Number(data[0]),
-      seller: sellerAddress,
-      bondId: dto.bondId,
-      amount: dto.amount,
-      pricePerToken: dto.pricePerToken,
-      quoteAsset: dto.quoteAsset,
-      status: OrderStatus.Open,
-      createdAt: new Date().toISOString(),
-    };
+    return this.getOrder(orderId);
   }
 
   async buyBondTokens(dto: BuyBondDto, buyerAddress: string): Promise<OrderResponse> {
     const adminSecret = this.getAdminSecret();
     const nonce = await this.nonceService.next(DEX_ROUTER(), buyerAddress);
 
-    const { result } = await this.contractService.invokeContractMethod(
+    await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'execute_purchase', adminSecret,
       [
         Address.fromString(buyerAddress).toScVal(),
         nativeToScVal(BigInt(dto.orderId), { type: 'u64' }),
-        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
         nativeToScVal(BigInt(dto.maxPrice), { type: 'i128' }),
+        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
       ],
       nonce,
     );
 
-    const data = scValToNative(result) as any[];
-
     await this.redis.del(`orders:*`);
-
-    return {
-      id: dto.orderId,
-      seller: data[1] as string,
-      bondId: Number(data[2]),
-      amount: dto.amount,
-      pricePerToken: dto.maxPrice,
-      quoteAsset: data[6] as 'USDC' | 'XLM',
-      status: OrderStatus.Open,
-      createdAt: new Date().toISOString(),
-    };
+    return this.getOrder(dto.orderId);
   }
 
   async cancelOrder(orderId: number, callerAddress: string): Promise<void> {
@@ -180,21 +144,35 @@ export class DexService {
       method: 'get_order',
       args: [nativeToScVal(BigInt(orderId), { type: 'u64' })],
     });
-    const data = scValToNative(orderScVal) as any[];
+    const order = this.decodeOrder(scValToNative(orderScVal) as any[]);
 
-    const order = {
+    await this.redis.setEx(cacheKey, 60, JSON.stringify(order));
+    return order;
+  }
+
+  private decodeOrder(data: any[]): OrderResponse {
+    return {
       id: Number(data[0]),
       seller: data[1] as string,
       bondId: Number(data[2]),
       amount: Number(data[3]),
       pricePerToken: Number(data[4]),
-      quoteAsset: data[6] as 'USDC' | 'XLM',
-      status: data[5] as OrderStatus,
+      quoteAsset: data[5] as 'USDC' | 'XLM',
+      status: this.orderStatusFromIndex(Number(data[6])),
       createdAt: new Date(Number(data[7]) * 1000).toISOString(),
     };
+  }
 
-    await this.redis.setEx(cacheKey, 60, JSON.stringify(order));
-    return order;
+  private orderStatusFromIndex(index: number): OrderStatus {
+    return (
+      [
+        OrderStatus.Open,
+        OrderStatus.PartiallyFilled,
+        OrderStatus.Filled,
+        OrderStatus.Cancelled,
+        OrderStatus.Expired,
+      ][index] ?? OrderStatus.Open
+    );
   }
 
   private getAdminSecret(): string {
