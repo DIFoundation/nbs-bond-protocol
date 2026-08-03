@@ -33,6 +33,7 @@ export class ContractService {
   constructor(private readonly stellarService: StellarService) {
     this.sorobanRpc = new rpc.Server(
       process.env.SOROBAN_RPC_URL || 'http://localhost:8000/soroban/rpc',
+      { allowHttp: true },
     );
   }
 

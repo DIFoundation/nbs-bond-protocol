@@ -1,4 +1,5 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { createHash } from 'crypto';
 import { ContractService } from '../stellar/contract.service';
 import { IpfsService } from '../projects/ipfs.service';
 import { NonceService } from '../common/services/nonce.service';
@@ -12,7 +13,7 @@ import {
   ReportStatus,
 } from './interfaces/oracle.interface';
 import { createClient, RedisClientType } from '@redis/client';
-import { nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
+import { nativeToScVal, scValToNative, Address, xdr } from '@stellar/stellar-sdk';
 import { StellarService } from '../stellar/stellar.service';
 
 const ORACLE_CONSUMER = () => process.env.ORACLE_CONSUMER_ADDRESS || '';
@@ -50,11 +51,12 @@ export class OracleService {
       ORACLE_CONSUMER(), 'submit_report', adminSecret,
       [
         Address.fromString(providerAddress).toScVal(),
+        this.toBytes32(dto.projectId),
         nativeToScVal(BigInt(dto.periodStart), { type: 'u64' }),
         nativeToScVal(BigInt(dto.periodEnd), { type: 'u64' }),
         nativeToScVal(BigInt(dto.carbonSequestered), { type: 'i128' }),
         nativeToScVal(dto.methodology, { type: 'symbol' }),
-        nativeToScVal(ipfsResult.hash, { type: 'string' }),
+        this.toBytes32(ipfsResult.hash),
       ],
       nonce,
     );
@@ -80,37 +82,23 @@ export class OracleService {
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
-    const reports: ReportResponse[] = [];
-    let index = 1;
+    const idsScVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_project_reports',
+      args: [this.toBytes32(projectId)],
+    });
+    const ids = scValToNative(idsScVal) as number[];
 
-    while (true) {
+    const reports: ReportResponse[] = [];
+    for (const reportId of ids) {
       try {
         const reportScVal = await this.contractService.simulateCall({
           contractAddress: ORACLE_CONSUMER(),
           method: 'get_report',
-          args: [nativeToScVal(BigInt(index), { type: 'u64' })],
+          args: [nativeToScVal(BigInt(reportId), { type: 'u64' })],
         });
-        const data = scValToNative(reportScVal) as any[];
-        const reportProjectId = Buffer.from(data[0] as Uint8Array).toString('hex');
-
-        if (reportProjectId === projectId) {
-          reports.push({
-            id: index,
-            projectId: reportProjectId,
-            periodStart: Number(data[1]),
-            periodEnd: Number(data[2]),
-            carbonSequestered: Number(data[3]),
-            methodology: data[4] as string,
-            ipfsHash: data[5] as string,
-            providerAddress: data[6] as string,
-            status: data[7] as ReportStatus,
-            createdAt: new Date(Number(data[8]) * 1000).toISOString(),
-          });
-        }
-        index++;
-      } catch {
-        break;
-      }
+        reports.push(this.decodeReport(scValToNative(reportScVal) as any[]));
+      } catch {}
     }
 
     await this.redis.setEx(cacheKey, 60, JSON.stringify(reports));
@@ -124,10 +112,9 @@ export class OracleService {
     await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'challenge_report', adminSecret,
       [
-        nativeToScVal(BigInt(reportId), { type: 'u64' }),
         Address.fromString(challengerAddress).toScVal(),
-        nativeToScVal(dto.counterEvidenceHash, { type: 'string' }),
-        nativeToScVal(dto.reason, { type: 'string' }),
+        nativeToScVal(BigInt(reportId), { type: 'u64' }),
+        this.toBytes32(dto.counterEvidenceHash),
       ],
       nonce,
     );
@@ -150,6 +137,7 @@ export class OracleService {
     await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'register_provider', adminSecret,
       [
+        Address.fromString(adminAddress).toScVal(),
         Address.fromString(dto.providerAddress).toScVal(),
         nativeToScVal(dto.methodology, { type: 'symbol' }),
       ],
@@ -170,32 +158,66 @@ export class OracleService {
     const cached = await this.redis.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
-    const providers: ProviderResponse[] = [];
-    let index = 1;
+    const listScVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'list_providers',
+      args: [],
+    });
+    const addresses = scValToNative(listScVal) as string[];
 
-    while (true) {
+    const providers: ProviderResponse[] = [];
+    for (const address of addresses) {
       try {
         const providerScVal = await this.contractService.simulateCall({
           contractAddress: ORACLE_CONSUMER(),
           method: 'get_provider',
-          args: [nativeToScVal(BigInt(index), { type: 'u64' })],
+          args: [Address.fromString(address).toScVal()],
         });
         const data = scValToNative(providerScVal) as any[];
         providers.push({
           providerAddress: data[0] as string,
           methodology: data[1] as string,
-          name: data[2] as string,
+          name: `Oracle ${(data[0] as string).slice(0, 6)}`,
           active: data[3] as boolean,
           registeredAt: new Date(Number(data[4]) * 1000).toISOString(),
         });
-        index++;
-      } catch {
-        break;
-      }
+      } catch {}
     }
 
     await this.redis.setEx(cacheKey, 120, JSON.stringify(providers));
     return providers;
+  }
+
+  private decodeReport(data: any[]): ReportResponse {
+    return {
+      id: Number(data[0]),
+      providerAddress: data[1] as string,
+      projectId: Buffer.from(data[2] as Uint8Array).toString('hex'),
+      periodStart: Number(data[3]),
+      periodEnd: Number(data[4]),
+      carbonSequestered: Number(data[5]),
+      methodology: data[6] as string,
+      ipfsHash: Buffer.from(data[7] as Uint8Array).toString('hex'),
+      status: this.reportStatusFromIndex(Number(data[8])),
+      createdAt: new Date(Number(data[9]) * 1000).toISOString(),
+    };
+  }
+
+  private reportStatusFromIndex(index: number): ReportStatus {
+    return (
+      [
+        ReportStatus.Pending,
+        ReportStatus.Verified,
+        ReportStatus.Challenged,
+        ReportStatus.Rejected,
+      ][index] ?? ReportStatus.Pending
+    );
+  }
+
+  private toBytes32(value: string): xdr.ScVal {
+    const hex = Buffer.from(value, 'hex');
+    const bytes = hex.length === 32 ? hex : createHash('sha256').update(value).digest();
+    return xdr.ScVal.scvBytes(bytes);
   }
 
   private getAdminSecret(): string {
