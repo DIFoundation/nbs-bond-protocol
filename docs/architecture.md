@@ -7,20 +7,23 @@
 // Public functions
 pub fn issue_bond(...)
 pub fn subscribe(...)
+pub fn transfer(from, to, bond_id, amount)   // on-chain token transfer
 pub fn redeem(...)
 pub fn mature_bond(...)
 pub fn get_bond(...)
 pub fn get_bond_state(...)
 pub fn get_holder_balance(...)
+pub fn bond_count(...)
 ```
 
 ### CouponEngine
 ```rust
 // Public functions
-pub fn distribute_coupon(...)
+pub fn distribute_coupon(caller, bond_id, period, holders, report_id, nonce)
+pub fn claim_credits(caller, bond_id, nonce)   // withdraw accrued credits
 pub fn accrued_credits(...)
-pub fn get_coupon_history(...)
-pub fn get_coupon_status(...)
+pub fn get_period_info(...)
+pub fn get_period_count(...)
 ```
 
 ### OracleConsumer
@@ -28,17 +31,21 @@ pub fn get_coupon_status(...)
 // Public functions
 pub fn register_provider(...)
 pub fn submit_report(...)
+pub fn verify_report(...)            // independent verifier endorsement
 pub fn challenge_report(...)
 pub fn resolve_challenge(...)
+pub fn set_signature_threshold(...)  // required independent verifications
 pub fn get_report(...)
 pub fn get_provider(...)
+pub fn get_verification_count(...)
+pub fn get_report_verifiers(...)
 ```
 
 ### DEXRouter
 ```rust
 // Public functions
 pub fn list_bond_tokens(...)
-pub fn execute_purchase(...)
+pub fn execute_purchase(...)   // settles via BondIssuer.transfer
 pub fn cancel_listing(...)
 pub fn get_order(...)
 pub fn get_orders_by_seller(...)
@@ -81,10 +88,17 @@ pub fn get_retired_balance(...)
 ```
 ProjectRegistry ──► BondIssuer (verify project exists)
 BondIssuer ──► CouponEngine (distribute coupons)
-CouponEngine ──► OracleConsumer (read verified reports)
-DEXRouter ──► BondIssuer (verify bond token ownership)
+CouponEngine ──► OracleConsumer (read verified reports by report_id)
+DEXRouter ──► BondIssuer (settle purchase via transfer, debiting seller / crediting buyer)
 CreditRetirement ──► CouponEngine (verify credit ownership)
 ```
+
+## Coupon Integrity
+
+- `CouponEngine.distribute_coupon` accepts an **on-chain `report_id`** instead of a caller-supplied report, eliminating fabricated distributions.
+- It reads the report from the `OracleConsumer` contract and rejects any report whose status is not `Verified` (`ReportNotVerified`).
+- The report's `project_id` must match the bond's registered project, otherwise distribution is rejected.
+- The verified report id is persisted in `PeriodInfo`, making every distribution auditable back to its evidence.
 
 ## API Layer
 
@@ -95,7 +109,9 @@ CreditRetirement ──► CouponEngine (verify credit ownership)
 | GET | /bonds/:id | Get bond details |
 | POST | /bonds/:id/subscribe | Subscribe to bond |
 | GET | /bonds/:id/holders | List token holders |
-| POST | /bonds/:id/coupon | Trigger coupon distribution |
+| POST | /bonds/:id/coupon | Trigger coupon distribution (by report_id) |
+| POST | /bonds/:id/claim | Claim accrued credits |
+| POST | /bonds/:id/transfer | Transfer bond tokens to another address |
 | POST | /projects | Register project |
 | GET | /projects | List projects |
 | GET | /projects/:id | Get project details |

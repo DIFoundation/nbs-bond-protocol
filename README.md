@@ -178,16 +178,16 @@ A bond issuer (project developer, green bank, or SPV) calls `BondIssuer.issue_bo
 Investors connect their Stellar wallets, pass KYC (handled off-chain via the NestJS API), and purchase bond tokens. Each token represents a pro-rata claim on the tranche. Minimum subscription is one token (fractional NbS exposure).
 
 #### Step 4 — Continuous Oracle Monitoring
-The oracle network continuously monitors carbon stock growth via satellite imagery, IoT sensors, and periodic third-party audits. Signed measurement reports are submitted on-chain to the `OracleConsumer` contract.
+The oracle network continuously monitors carbon stock growth via satellite imagery, IoT sensors, and periodic third-party audits. Signed measurement reports are submitted on-chain to the `OracleConsumer` contract. A report only becomes `Verified` after **independent sources** endorse it: each verify call is recorded on-chain and counted against a configurable signature threshold, and a provider can never verify its own report. This multi-source consensus makes fabricated measurements economically and cryptographically impractical.
 
 #### Step 5 — Coupon Calculation
-At each coupon date, the `CouponEngine` contract reads the latest oracle report and calculates the total carbon credits earned by the project during that period. Credits are allocated pro-rata to all bond token holders.
+At each coupon date, the `CouponEngine` contract reads the verified oracle report **by its on-chain `report_id`** and calculates the total carbon credits earned by the project during that period. Reports that are not `Verified` are rejected, and the report's project must match the bond's registered project. Credits are allocated pro-rata to all bond token holders.
 
-#### Step 6 — Automatic Distribution
-Credits are minted as Stellar Assets and distributed directly to bondholder wallets. No manual intervention, no intermediary, no settlement delay. The distribution transaction is publicly auditable on the Stellar ledger.
+#### Step 6 — Automatic Distribution & Claiming
+Coupon distribution runs entirely on-chain, referencing only reports that have passed multi-source verification, and records the `report_id` on-chain for full auditability. Accrued credits are claimed directly to the bondholder's wallet via `claim_credits()` (or the `POST /bonds/:id/claim` API). No manual intervention, no intermediary, no settlement delay.
 
 #### Step 7 — Secondary Market Trading
-At any point, investors may list bond tokens or credit coupons on the Stellar DEX. The `DEXRouter` contract facilitates order routing and settlement. Price discovery happens permissionlessly, reflecting market views on project performance.
+At any point, investors may list bond tokens on the Stellar DEX. When an order is filled, the `DEXRouter` contract invokes `BondIssuer.transfer()` to move the tokens **on-chain from seller to buyer atomically** — the order status only updates after the token transfer succeeds, eliminating off-ledger settlement risk. Tokens can also be transferred peer-to-peer via `BondIssuer.transfer()` (or the `POST /bonds/:id/transfer` API). Price discovery happens permissionlessly, reflecting market views on project performance.
 
 #### Step 8 — Maturity & Settlement
 At maturity, the `BondIssuer` contract returns principal to bondholders and settles any remaining credits. The bond tranche is marked inactive and removed from the active registry.
