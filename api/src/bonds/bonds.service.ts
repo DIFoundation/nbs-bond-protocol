@@ -7,11 +7,15 @@ import { createClient, RedisClientType } from '@redis/client';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { DistributeCouponDto } from './dto/distribute-coupon.dto';
+import { ClaimCreditsDto } from './dto/claim-credits.dto';
+import { TransferBondDto } from './dto/transfer-bond.dto';
 import {
   BondResponse,
   SubscriptionResponse,
   HolderListResponse,
   CouponDistributionResponse,
+  ClaimCreditsResponse,
+  TransferResponse,
   BondStatusEnum,
   CreditTypeEnum,
 } from './interfaces/bond.interface';
@@ -61,7 +65,7 @@ export class BondsService {
 
     try {
       const countScVal = await this.contractService.simulateCall({
-        contractAddress: BOND_ISSUER(), method: 'total_subscribed', args: [],
+        contractAddress: BOND_ISSUER(), method: 'bond_count', args: [],
       });
       total = Number(scValToNative(countScVal));
     } catch {}
@@ -142,10 +146,11 @@ export class BondsService {
     const { result } = await this.contractService.invokeContractMethod(
       COUPON_ENGINE(), 'distribute_coupon', adminSecret,
       [
+        Address.fromString(adminAddress).toScVal(),
         nativeToScVal(BigInt(id), { type: 'u64' }),
         nativeToScVal(dto.periodIndex, { type: 'u32' }),
         xdr.ScVal.scvVec(holderAddresses.map((h) => Address.fromString(h).toScVal())),
-        this.encodeOracleReport(dto.report),
+        nativeToScVal(BigInt(dto.reportId), { type: 'u64' }),
       ],
       nonce,
     );
@@ -156,6 +161,53 @@ export class BondsService {
       periodIndex: dto.periodIndex,
       totalCredits: Number(parsed?.[2] ?? 0),
       holderCount: Number(parsed?.[3] ?? 0),
+    };
+  }
+
+  async claimCredits(id: number, dto: ClaimCreditsDto): Promise<ClaimCreditsResponse> {
+    const investorSecret = process.env.INVESTOR_SECRET_KEY || '';
+    const nonce = await this.nonceService.next(COUPON_ENGINE(), dto.investorAddress);
+
+    const { result, transactionHash } = await this.contractService.invokeContractMethod(
+      COUPON_ENGINE(), 'claim_credits', investorSecret,
+      [
+        Address.fromString(dto.investorAddress).toScVal(),
+        nativeToScVal(BigInt(id), { type: 'u64' }),
+      ],
+      nonce,
+    );
+
+    return {
+      bondId: id,
+      investorAddress: dto.investorAddress,
+      credits: Number(scValToNative(result)),
+      transactionHash: transactionHash || '',
+    };
+  }
+
+  async transfer(id: number, dto: TransferBondDto): Promise<TransferResponse> {
+    const investorSecret = process.env.INVESTOR_SECRET_KEY || '';
+    const nonce = await this.nonceService.next(BOND_ISSUER(), dto.fromAddress);
+
+    const { transactionHash } = await this.contractService.invokeContractMethod(
+      BOND_ISSUER(), 'transfer', investorSecret,
+      [
+        Address.fromString(dto.fromAddress).toScVal(),
+        Address.fromString(dto.toAddress).toScVal(),
+        nativeToScVal(BigInt(id), { type: 'u64' }),
+        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
+      ],
+      nonce,
+    );
+
+    await this.redis.sAdd(`bond:${id}:holders`, dto.toAddress);
+
+    return {
+      bondId: id,
+      fromAddress: dto.fromAddress,
+      toAddress: dto.toAddress,
+      amount: dto.amount,
+      transactionHash: transactionHash || '',
     };
   }
 
@@ -182,18 +234,6 @@ export class BondsService {
       nativeToScVal(dto.creditType, { type: 'symbol' }),
       nativeToScVal(BigInt(dto.maturityDate), { type: 'u64' }),
       nativeToScVal(BigInt(dto.totalSupply), { type: 'i128' }),
-    ]);
-  }
-
-  private encodeOracleReport(report: any): xdr.ScVal {
-    return xdr.ScVal.scvVec([
-      xdr.ScVal.scvBytes(Buffer.from(report.projectId, 'hex')),
-      nativeToScVal(BigInt(report.periodStart), { type: 'u64' }),
-      nativeToScVal(BigInt(report.periodEnd), { type: 'u64' }),
-      nativeToScVal(BigInt(report.carbonSequestered), { type: 'i128' }),
-      nativeToScVal(report.methodology, { type: 'symbol' }),
-      xdr.ScVal.scvBytes(Buffer.from(report.providerSignature, 'hex')),
-      xdr.ScVal.scvBytes(Buffer.from(report.ipfsEvidenceHash, 'hex')),
     ]);
   }
 

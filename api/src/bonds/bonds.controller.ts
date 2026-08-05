@@ -6,12 +6,16 @@ import { BondsService } from './bonds.service';
 import { CreateBondDto } from './dto/create-bond.dto';
 import { SubscribeDto } from './dto/subscribe.dto';
 import { DistributeCouponDto } from './dto/distribute-coupon.dto';
+import { ClaimCreditsDto } from './dto/claim-credits.dto';
+import { TransferBondDto } from './dto/transfer-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
 import {
   BondResponse,
   SubscriptionResponse,
   HolderListResponse,
   CouponDistributionResponse,
+  ClaimCreditsResponse,
+  TransferResponse,
 } from './interfaces/bond.interface';
 
 @Controller('bonds')
@@ -57,6 +61,24 @@ export class BondsController {
     @Body() dto: DistributeCouponDto,
   ): Promise<CouponDistributionResponse> {
     return this.bondsService.distributeCoupon(id, dto);
+  }
+
+  @Post(':id/claim')
+  @HttpCode(HttpStatus.OK)
+  async claimCredits(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ClaimCreditsDto,
+  ): Promise<ClaimCreditsResponse> {
+    return this.bondsService.claimCredits(id, dto);
+  }
+
+  @Post(':id/transfer')
+  @HttpCode(HttpStatus.OK)
+  async transfer(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: TransferBondDto,
+  ): Promise<TransferResponse> {
+    return this.bondsService.transfer(id, dto);
   }
 
   @Post(':id/mature')

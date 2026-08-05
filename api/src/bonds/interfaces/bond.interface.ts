@@ -42,3 +42,18 @@ export interface CouponDistributionResponse {
   totalCredits: number;
   holderCount: number;
 }
+
+export interface ClaimCreditsResponse {
+  bondId: number;
+  investorAddress: string;
+  credits: number;
+  transactionHash: string;
+}
+
+export interface TransferResponse {
+  bondId: number;
+  fromAddress: string;
+  toAddress: string;
+  amount: number;
+  transactionHash: string;
+}
