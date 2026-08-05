@@ -15,6 +15,8 @@ pub enum DataKey {
     ReportCount,
     ProjectReports(BytesN<32>),
     Challenge(u64),
+    ReportVerifiers(u64),
+    VerificationCount(u64),
     SignatureThreshold,
     ChallengeWindow,
     Nonce(Address),
@@ -313,16 +315,53 @@ impl OracleConsumer {
             return Err(OracleError::ReportAlreadyVerified);
         }
 
-        report.status = ReportStatus::Verified;
-        report.verified_at = env.ledger().timestamp();
-        env.storage()
-            .instance()
-            .set(&DataKey::Report(report_id), &report);
+        if caller == report.provider {
+            return Err(OracleError::InvalidSignature);
+        }
 
-        env.events().publish(
-            (Symbol::new(&env, "report_verified"),),
-            (report_id,),
-        );
+        let verifiers_key = DataKey::ReportVerifiers(report_id);
+        let mut verifiers: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&verifiers_key)
+            .unwrap_or(vec![&env]);
+
+        let mut already_verified = false;
+        for verifier in verifiers.iter() {
+            if verifier == caller {
+                already_verified = true;
+                break;
+            }
+        }
+
+        if !already_verified {
+            verifiers.push_back(caller.clone());
+            env.storage()
+                .instance()
+                .set(&verifiers_key, &verifiers);
+            env.storage()
+                .instance()
+                .set(&DataKey::VerificationCount(report_id), &verifiers.len());
+        }
+
+        let threshold: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SignatureThreshold)
+            .unwrap_or(1);
+
+        if verifiers.len() >= threshold {
+            report.status = ReportStatus::Verified;
+            report.verified_at = env.ledger().timestamp();
+            env.storage()
+                .instance()
+                .set(&DataKey::Report(report_id), &report);
+
+            env.events().publish(
+                (Symbol::new(&env, "report_verified"),),
+                (report_id,),
+            );
+        }
 
         Ok(())
     }
@@ -488,6 +527,20 @@ impl OracleConsumer {
             .instance()
             .get(&DataKey::Challenge(report_id))
             .ok_or(OracleError::ReportNotFound)
+    }
+
+    pub fn get_verification_count(env: Env, report_id: u64) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::VerificationCount(report_id))
+            .unwrap_or(0)
+    }
+
+    pub fn get_report_verifiers(env: Env, report_id: u64) -> Vec<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReportVerifiers(report_id))
+            .unwrap_or(vec![&env])
     }
 
     pub fn set_signature_threshold(
@@ -1102,6 +1155,192 @@ mod test {
 
         client.set_signature_threshold(&admin, &3u32, &0);
         client.set_signature_threshold(&admin, &5u32, &1);
+    }
+
+    fn register_provider_and_submit(
+        env: &Env,
+        client: &OracleConsumerClient<'static>,
+        admin: &Address,
+        provider: &Address,
+        project_id: &BytesN<32>,
+        provider_nonce: u64,
+        admin_nonce: u64,
+    ) -> u64 {
+        client.register_provider(admin, provider, &Symbol::new(env, "verra_vcs"), &admin_nonce);
+        client.submit_report(
+            provider,
+            project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(env, "verra_vcs"),
+            &make_ipfs_hash(env, 1),
+            &provider_nonce,
+        )
+    }
+
+    #[test]
+    fn test_threshold_requires_multiple_verifiers() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider_a = Address::generate(&env);
+        let provider_b = Address::generate(&env);
+        let provider_c = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.set_signature_threshold(&admin, &2u32, &0);
+
+        client.register_provider(&admin, &provider_a, &Symbol::new(&env, "verra_vcs"), &1);
+        client.register_provider(&admin, &provider_b, &Symbol::new(&env, "satellite"), &2);
+        client.register_provider(&admin, &provider_c, &Symbol::new(&env, "iot"), &3);
+
+        let report_id = client.submit_report(
+            &provider_a,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        client.verify_report(&provider_b, &report_id, &0);
+        assert_eq!(client.get_verification_count(&report_id), 1);
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Pending);
+
+        client.verify_report(&provider_c, &report_id, &0);
+        assert_eq!(client.get_verification_count(&report_id), 2);
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Verified);
+
+        let verifiers = client.get_report_verifiers(&report_id);
+        assert_eq!(verifiers.len(), 2);
+        assert_eq!(verifiers.get(0).unwrap(), provider_b);
+        assert_eq!(verifiers.get(1).unwrap(), provider_c);
+    }
+
+    #[test]
+    fn test_same_verifier_does_not_double_count() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider_a = Address::generate(&env);
+        let provider_b = Address::generate(&env);
+        let provider_c = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.set_signature_threshold(&admin, &2u32, &0);
+
+        client.register_provider(&admin, &provider_a, &Symbol::new(&env, "verra_vcs"), &1);
+        client.register_provider(&admin, &provider_b, &Symbol::new(&env, "satellite"), &2);
+        client.register_provider(&admin, &provider_c, &Symbol::new(&env, "iot"), &3);
+
+        let report_id = client.submit_report(
+            &provider_a,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &0,
+        );
+
+        client.verify_report(&provider_b, &report_id, &0);
+        let result = client.try_verify_report(&provider_b, &report_id, &1);
+        assert_eq!(result, Ok(Ok(())));
+        assert_eq!(client.get_verification_count(&report_id), 1);
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Pending);
+
+        client.verify_report(&provider_c, &report_id, &0);
+        assert_eq!(client.get_verification_count(&report_id), 2);
+    }
+
+    #[test]
+    fn test_provider_cannot_verify_own_report() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider_a = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        let report_id = register_provider_and_submit(
+            &env,
+            &client,
+            &admin,
+            &provider_a,
+            &project_id,
+            0,
+            0,
+        );
+
+        let result = client.try_verify_report(&provider_a, &report_id, &1);
+        assert_eq!(result, Err(Ok(OracleError::InvalidSignature)));
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Pending);
+        assert_eq!(client.get_verification_count(&report_id), 0);
+    }
+
+    #[test]
+    fn test_admin_verification_counts_once() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider_a = Address::generate(&env);
+        let provider_b = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.set_signature_threshold(&admin, &2u32, &0);
+
+        let report_id = register_provider_and_submit(
+            &env,
+            &client,
+            &admin,
+            &provider_a,
+            &project_id,
+            0,
+            1,
+        );
+
+        client.register_provider(&admin, &provider_b, &Symbol::new(&env, "satellite"), &2);
+
+        client.verify_report(&admin, &report_id, &3);
+        assert_eq!(client.get_verification_count(&report_id), 1);
+        assert_eq!(
+            client.get_report(&report_id).status,
+            ReportStatus::Pending
+        );
+
+        client.verify_report(&provider_b, &report_id, &0);
+        assert_eq!(client.get_verification_count(&report_id), 2);
+        assert_eq!(
+            client.get_report(&report_id).status,
+            ReportStatus::Verified
+        );
     }
 
     #[test]
