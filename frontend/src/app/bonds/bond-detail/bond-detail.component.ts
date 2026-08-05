@@ -110,6 +110,63 @@ import { Bond } from '../../shared/interfaces/bond.interface';
                 View on Marketplace
               </a>
             </div>
+
+            <div class="claim-section">
+              <h3 class="section-title">Claim Credits</h3>
+              <button
+                class="btn btn-primary claim-btn"
+                [disabled]="claimSubmitting()"
+                (click)="onClaim()"
+              >
+                {{ claimSubmitting() ? 'Claiming...' : 'Claim Accrued Credits' }}
+              </button>
+              @if (claimSuccess()) {
+                <div class="success-msg">
+                  Claimed {{ claimCredits() }} credits! Tx: {{ claimTx() }}
+                </div>
+              }
+              @if (claimError()) {
+                <div class="error-msg">{{ claimError() }}</div>
+              }
+            </div>
+
+            <div class="transfer-section">
+              <h3 class="section-title">Transfer Tokens</h3>
+              <div class="subscribe-form">
+                <label class="form-label" for="transferTo">Recipient Address</label>
+                <input
+                  id="transferTo"
+                  type="text"
+                  class="form-input"
+                  [(ngModel)]="transferTo"
+                  placeholder="G... recipient public key"
+                />
+                <label class="form-label" for="transferAmount">Amount</label>
+                <input
+                  id="transferAmount"
+                  type="number"
+                  class="form-input"
+                  [(ngModel)]="transferAmount"
+                  placeholder="Enter amount"
+                  min="1"
+                />
+                <button
+                  class="btn btn-primary transfer-btn"
+                  [disabled]="!transferTo || !transferAmount || transferAmount < 1 || transferSubmitting()"
+                  (click)="onTransfer()"
+                >
+                  {{ transferSubmitting() ? 'Transferring...' : 'Transfer' }}
+                </button>
+                @if (transferSuccess()) {
+                  <div class="success-msg">
+                    Transferred {{ transferAmount }} tokens to {{ transferTo }}! Tx: {{ transferTx() }}
+                  </div>
+                }
+                @if (transferError()) {
+                  <div class="error-msg">{{ transferError() }}</div>
+                }
+              </div>
+            </div>
           </div>
         </div>
       } @else if (loading()) {
@@ -160,6 +217,9 @@ import { Bond } from '../../shared/interfaces/bond.interface';
     .success-msg { font-size: 0.8125rem; color: #22c55e; word-break: break-all; padding: 8px; background: #f0fdf4; border-radius: 6px; }
     .error-msg { font-size: 0.8125rem; color: #ef4444; padding: 8px; background: #fef2f2; border-radius: 6px; }
     .marketplace-link { margin-top: 20px; }
+    .claim-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
+    .claim-btn, .transfer-btn { width: 100%; }
+    .transfer-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
@@ -174,8 +234,19 @@ export class BondDetailComponent implements OnInit {
   readonly subscribeSuccess = signal(false);
   readonly subscribeTx = signal('');
   readonly subscribeError = signal('');
+  readonly claimSubmitting = signal(false);
+  readonly claimSuccess = signal(false);
+  readonly claimCredits = signal(0);
+  readonly claimTx = signal('');
+  readonly claimError = signal('');
+  readonly transferSubmitting = signal(false);
+  readonly transferSuccess = signal(false);
+  readonly transferTx = signal('');
+  readonly transferError = signal('');
 
   subscribeAmount = 0;
+  transferTo = '';
+  transferAmount = 0;
 
   subscribeProgress(): number {
     const b = this.bond();
@@ -221,6 +292,49 @@ export class BondDetailComponent implements OnInit {
       error: (err) => {
         this.subscribeError.set(err.error?.detail || err.message || 'Subscription failed');
         this.subscribeSubmitting.set(false);
+      },
+    });
+  }
+
+  onClaim(): void {
+    const b = this.bond();
+    if (!b) return;
+    this.claimSubmitting.set(true);
+    this.claimSuccess.set(false);
+    this.claimError.set('');
+
+    this.apiService.claimCredits(b.id).subscribe({
+      next: (res) => {
+        this.claimSuccess.set(true);
+        this.claimCredits.set(res.credits);
+        this.claimTx.set(res.transactionHash);
+        this.claimSubmitting.set(false);
+      },
+      error: (err) => {
+        this.claimError.set(err.error?.detail || err.message || 'Claim failed');
+        this.claimSubmitting.set(false);
+      },
+    });
+  }
+
+  onTransfer(): void {
+    const b = this.bond();
+    if (!b || !this.transferTo || !this.transferAmount || this.transferAmount < 1) return;
+    this.transferSubmitting.set(true);
+    this.transferSuccess.set(false);
+    this.transferError.set('');
+
+    this.apiService.transferBond(b.id, this.transferTo, this.transferAmount).subscribe({
+      next: (res) => {
+        this.transferSuccess.set(true);
+        this.transferTx.set(res.transactionHash);
+        this.transferSubmitting.set(false);
+        this.transferTo = '';
+        this.transferAmount = 0;
+      },
+      error: (err) => {
+        this.transferError.set(err.error?.detail || err.message || 'Transfer failed');
+        this.transferSubmitting.set(false);
       },
     });
   }

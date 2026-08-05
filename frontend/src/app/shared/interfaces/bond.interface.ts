@@ -47,6 +47,21 @@ export interface SubscriptionResponse {
   transactionHash: string;
 }
 
+export interface ClaimCreditsResponse {
+  bondId: number;
+  investorAddress: string;
+  credits: number;
+  transactionHash: string;
+}
+
+export interface TransferResponse {
+  bondId: number;
+  fromAddress: string;
+  toAddress: string;
+  amount: number;
+  transactionHash: string;
+}
+
 export interface CreateProjectDto {
   name: string;
   methodology: string;

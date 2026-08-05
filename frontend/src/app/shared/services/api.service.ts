@@ -6,6 +6,7 @@ import { WalletService } from '../../auth/wallet.service';
 import {
   Bond, Project, Order, PaginatedResponse,
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
+  ClaimCreditsResponse, TransferResponse,
 } from '../interfaces/bond.interface';
 
 @Injectable({ providedIn: 'root' })
@@ -46,6 +47,24 @@ export class ApiService {
     return this.http.post<SubscriptionResponse>(
       `/api/bonds/${id}/subscribe`,
       { amount, investorAddress },
+      { headers: this.headers() },
+    );
+  }
+
+  claimCredits(id: number): Observable<ClaimCreditsResponse> {
+    const investorAddress = this.walletService.address();
+    return this.http.post<ClaimCreditsResponse>(
+      `/api/bonds/${id}/claim`,
+      { investorAddress },
+      { headers: this.headers() },
+    );
+  }
+
+  transferBond(id: number, toAddress: string, amount: number): Observable<TransferResponse> {
+    const fromAddress = this.walletService.address();
+    return this.http.post<TransferResponse>(
+      `/api/bonds/${id}/transfer`,
+      { fromAddress, toAddress, amount },
       { headers: this.headers() },
     );
   }
