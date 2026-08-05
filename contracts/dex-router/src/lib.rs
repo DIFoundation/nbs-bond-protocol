@@ -289,6 +289,24 @@ impl DEXRouter {
             return Err(DEXError::InsufficientBalance);
         }
 
+        let bond_issuer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondIssuerAddress)
+            .ok_or(DEXError::NotInitialized)?;
+
+        env.invoke_contract::<()>(
+            &bond_issuer,
+            &Symbol::new(&env, "transfer"),
+            vec![
+                &env,
+                order.seller.clone().into_val(&env),
+                buyer.clone().into_val(&env),
+                order.bond_id.into_val(&env),
+                amount.into_val(&env),
+            ],
+        );
+
         if amount == order.amount {
             order.status = OrderStatus::Filled;
         } else {
@@ -435,7 +453,7 @@ mod test {
     #[test]
     fn test_list_tokens() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -479,7 +497,7 @@ mod test {
     #[test]
     fn test_buy_full_order() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -488,7 +506,7 @@ mod test {
 
         let contract_id = env.register(
             DEXRouter,
-            (admin.clone(), issuer_id, Address::generate(&env)),
+            (admin.clone(), issuer_id.clone(), Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
 
@@ -506,12 +524,17 @@ mod test {
 
         let order = client.get_order(&order_id);
         assert_eq!(order.status, OrderStatus::Filled);
+
+        let issuer_client =
+            nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_000);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 1_000);
     }
 
     #[test]
     fn test_buy_partial_fill() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -520,7 +543,7 @@ mod test {
 
         let contract_id = env.register(
             DEXRouter,
-            (admin.clone(), issuer_id, Address::generate(&env)),
+            (admin.clone(), issuer_id.clone(), Address::generate(&env)),
         );
         let client = DEXRouterClient::new(&env, &contract_id);
 
@@ -540,16 +563,102 @@ mod test {
         assert_eq!(order.status, OrderStatus::PartiallyFilled);
         assert_eq!(order.amount, 600);
 
+        let issuer_client =
+            nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_600);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 400);
+
         client.execute_purchase(&buyer, &order_id, &100i128, &600i128, &1);
 
         let order = client.get_order(&order_id);
         assert_eq!(order.status, OrderStatus::Filled);
+
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_000);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 1_000);
+    }
+
+    #[test]
+    fn test_buy_fails_when_seller_balance_depleted() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let third_party = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 1_000);
+
+        let issuer_client =
+            nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id.clone());
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1_000i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+
+        issuer_client.transfer(&seller, &third_party, &bond_id, &1_000);
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &0);
+        assert!(result.is_err());
+
+        let order = client.get_order(&order_id);
+        assert_eq!(order.status, OrderStatus::Open);
+        assert_eq!(order.amount, 1_000);
+
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 0);
+    }
+
+    #[test]
+    fn test_buy_failed_purchase_does_not_debit_buyer() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+
+        let issuer_client =
+            nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id.clone());
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1_000i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &50i128, &1_000i128, &0);
+        assert_eq!(result, Err(Ok(DEXError::InsufficientBalance)));
+
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 5_000);
+        assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 0);
     }
 
     #[test]
     fn test_cancel_listing() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -580,7 +689,7 @@ mod test {
     #[test]
     fn test_cancel_unauthorized() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let stranger = Address::generate(&env);
@@ -610,7 +719,7 @@ mod test {
     #[test]
     fn test_self_buy_reject() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -639,7 +748,7 @@ mod test {
     #[test]
     fn test_insufficient_balance() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -666,7 +775,7 @@ mod test {
     #[test]
     fn test_expired_order() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -700,7 +809,7 @@ mod test {
     #[test]
     fn test_nonexistent_order() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
 
@@ -717,7 +826,7 @@ mod test {
     #[test]
     fn test_clean_expired_orders() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -772,7 +881,7 @@ mod test {
     #[test]
     fn test_buy_more_than_listed() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -802,7 +911,7 @@ mod test {
     #[test]
     fn test_buy_with_low_max_price() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -832,7 +941,7 @@ mod test {
     #[test]
     fn test_purchase_zero_amount_rejected() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
@@ -866,7 +975,7 @@ mod test {
     #[test]
     fn test_list_zero_amount_rejected() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let (_issuer_admin, issuer_id, bond_id, seller) =
@@ -893,7 +1002,7 @@ mod test {
     #[test]
     fn test_order_expired_at_expiry_timestamp() {
         let env = Env::default();
-        env.mock_all_auths();
+        env.mock_all_auths_allowing_non_root_auth();
 
         let admin = Address::generate(&env);
         let buyer = Address::generate(&env);
