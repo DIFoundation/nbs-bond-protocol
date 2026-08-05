@@ -194,6 +194,69 @@ impl BondIssuer {
         Ok(())
     }
 
+    pub fn transfer(
+        env: Env,
+        from: Address,
+        to: Address,
+        bond_id: u64,
+        amount: i128,
+    ) -> Result<(), BondError> {
+        from.require_auth();
+
+        if to == from {
+            return Err(BondError::Unauthorized);
+        }
+        if amount <= 0 {
+            return Err(BondError::ZeroAmount);
+        }
+
+        let state: BondState = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondState(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+        if state.status != BondStatus::Active {
+            return Err(BondError::BondAlreadyMatured);
+        }
+
+        let from_key = DataKey::HolderBalance(bond_id, from.clone());
+        let from_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&from_key)
+            .unwrap_or(0);
+        if from_balance < amount {
+            return Err(BondError::InsufficientSupply);
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(BondError::Overflow)?;
+        env.storage()
+            .persistent()
+            .set(&from_key, &new_from_balance);
+
+        let to_key = DataKey::HolderBalance(bond_id, to.clone());
+        let to_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&to_key)
+            .unwrap_or(0);
+        let new_to_balance = to_balance
+            .checked_add(amount)
+            .ok_or(BondError::Overflow)?;
+        env.storage()
+            .persistent()
+            .set(&to_key, &new_to_balance);
+
+        env.events().publish(
+            (Symbol::new(&env, "transferred"),),
+            (bond_id, from, to, amount),
+        );
+
+        Ok(())
+    }
+
     pub fn redeem(
         env: Env,
         holder: Address,
@@ -581,6 +644,124 @@ mod test {
 
         client.subscribe(&user, &bond_id, &4000, &0);
         assert_eq!(client.total_subscribed(&bond_id), 4000);
+    }
+
+    #[test]
+    fn test_transfer() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.transfer(&user, &user2, &bond_id, &600);
+
+        assert_eq!(client.get_holder_balance(&bond_id, &user), 400);
+        assert_eq!(client.get_holder_balance(&bond_id, &user2), 600);
+
+        let state = client.get_bond_state(&bond_id);
+        assert_eq!(state.total_subscribed, 1000);
+    }
+
+    #[test]
+    fn test_transfer_partial_keeps_source() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.subscribe(&user2, &bond_id, &500, &0);
+        client.transfer(&user, &user2, &bond_id, &250);
+
+        assert_eq!(client.get_holder_balance(&bond_id, &user), 750);
+        assert_eq!(client.get_holder_balance(&bond_id, &user2), 750);
+    }
+
+    #[test]
+    fn test_transfer_more_than_owned() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &500, &0);
+
+        let result = client.try_transfer(&user, &user2, &bond_id, &600);
+        assert_eq!(result, Err(Ok(BondError::InsufficientSupply)));
+    }
+
+    #[test]
+    fn test_transfer_from_non_holder() {
+        let (env, client, admin, _user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        let result = client.try_transfer(&user2, &Address::generate(&env), &bond_id, &100);
+        assert_eq!(result, Err(Ok(BondError::InsufficientSupply)));
+    }
+
+    #[test]
+    fn test_transfer_self_rejected() {
+        let (env, client, admin, user) = setup();
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &500, &0);
+
+        let result = client.try_transfer(&user, &user, &bond_id, &100);
+        assert_eq!(result, Err(Ok(BondError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_transfer_zero_amount() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &500, &0);
+
+        let result = client.try_transfer(&user, &user2, &bond_id, &0);
+        assert_eq!(result, Err(Ok(BondError::ZeroAmount)));
+    }
+
+    #[test]
+    fn test_transfer_nonexistent_bond() {
+        let (_env, client, _admin, user) = setup();
+        let user2 = Address::generate(&_env);
+        let result = client.try_transfer(&user, &user2, &999, &100);
+        assert_eq!(result, Err(Ok(BondError::BondNotFound)));
+    }
+
+    #[test]
+    fn test_transfer_matured_bond_rejected() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.mature_bond(&admin, &bond_id, &1);
+
+        let result = client.try_transfer(&user, &user2, &bond_id, &100);
+        assert_eq!(result, Err(Ok(BondError::BondAlreadyMatured)));
+    }
+
+    #[test]
+    fn test_transfer_into_accumulated_balance() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.subscribe(&user2, &bond_id, &300, &0);
+        client.transfer(&user, &user2, &bond_id, &700);
+
+        assert_eq!(client.get_holder_balance(&bond_id, &user), 300);
+        assert_eq!(client.get_holder_balance(&bond_id, &user2), 1000);
     }
 
     #[test]
