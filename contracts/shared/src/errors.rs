@@ -12,6 +12,7 @@ pub enum BondError {
     ZeroAmount = 7,
     ProjectNotApproved = 8,
     Overflow = 9,
+    ReportNotVerified = 10,
 }
 
 #[derive(Clone, Debug, PartialEq)]

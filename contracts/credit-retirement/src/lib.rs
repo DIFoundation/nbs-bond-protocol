@@ -252,7 +252,7 @@ mod test {
     };
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
     use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
-    use nbbs_shared::{BondConfig, OracleReport};
+    use nbbs_shared::BondConfig;
 
     fn make_certificate_hash(env: &Env, value: u8) -> BytesN<32> {
         let mut arr = [0u8; 32];
@@ -266,16 +266,34 @@ mod test {
         BytesN::from_array(env, &arr)
     }
 
-    fn make_report(env: &Env, project_id: BytesN<32>, carbon: i128) -> OracleReport {
-        OracleReport {
+    fn submit_verified_report(
+        env: &Env,
+        admin: &Address,
+        oracle_id: &Address,
+        project_id: &BytesN<32>,
+        carbon: i128,
+    ) -> u64 {
+        let oc_client =
+            nbbs_oracle_consumer::OracleConsumerClient::new(env, oracle_id);
+        let provider = Address::generate(env);
+        oc_client.register_provider(
+            admin,
+            &provider,
+            &Symbol::new(env, "verra_vcs"),
+            &0,
+        );
+        let report_id = oc_client.submit_report(
+            &provider,
             project_id,
-            period_start: 1000,
-            period_end: 2000,
-            carbon_sequestered: carbon,
-            methodology: Symbol::new(env, "verra_vcs"),
-            provider_signature: BytesN::from_array(env, &[0u8; 64]),
-            ipfs_evidence_hash: make_certificate_hash(env, 9),
-        }
+            &1000u64,
+            &2000u64,
+            &carbon,
+            &Symbol::new(env, "verra_vcs"),
+            &make_certificate_hash(env, 9),
+            &0,
+        );
+        oc_client.verify_report(admin, &report_id, &1);
+        report_id
     }
 
     struct Setup {
@@ -292,7 +310,6 @@ mod test {
 
         let admin = Address::generate(&env);
         let holder = Address::generate(&env);
-        let oracle = Address::generate(&env);
         let project_id = make_project_id(&env, 1);
 
         let issuer_admin = Address::generate(&env);
@@ -310,16 +327,22 @@ mod test {
         let bond_id = issuer_client.issue_bond(&issuer_admin, &bond_config, &0);
         issuer_client.subscribe(&holder, &bond_id, &10_000, &0);
 
+        let oracle_id = env.register(
+            nbbs_oracle_consumer::OracleConsumer,
+            (admin.clone(),),
+        );
+        let report_id =
+            submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
+
         let ce_id = env.register(
             CouponEngine,
-            (admin.clone(), issuer_id.clone(), oracle.clone()),
+            (admin.clone(), issuer_id.clone(), oracle_id.clone()),
         );
         let ce_client = CouponEngineClient::new(&env, &ce_id);
         ce_client.register_bond(&admin, &bond_id, &project_id, &0);
 
-        let report = make_report(&env, project_id, 100_000);
         let holders = svec![&env, holder.clone()];
-        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report, &1);
+        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
         let accrued = ce_client.accrued_credits(&bond_id, &holder);
         assert!(accrued > 0);
 
@@ -510,7 +533,6 @@ mod test {
         let admin = Address::generate(&env);
         let holder1 = Address::generate(&env);
         let holder2 = Address::generate(&env);
-        let oracle = Address::generate(&env);
         let project_id = make_project_id(&env, 3);
 
         let issuer_admin = Address::generate(&env);
@@ -529,16 +551,22 @@ mod test {
         issuer_client.subscribe(&holder1, &bond_id, &3_000, &0);
         issuer_client.subscribe(&holder2, &bond_id, &7_000, &0);
 
+        let oracle_id = env.register(
+            nbbs_oracle_consumer::OracleConsumer,
+            (admin.clone(),),
+        );
+        let report_id =
+            submit_verified_report(&env, &admin, &oracle_id, &project_id, 100_000);
+
         let ce_id = env.register(
             CouponEngine,
-            (admin.clone(), issuer_id.clone(), oracle.clone()),
+            (admin.clone(), issuer_id.clone(), oracle_id.clone()),
         );
         let ce_client = CouponEngineClient::new(&env, &ce_id);
         ce_client.register_bond(&admin, &bond_id, &project_id, &0);
 
-        let report = make_report(&env, project_id, 100_000);
         let holders = svec![&env, holder1.clone(), holder2.clone()];
-        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report, &1);
+        ce_client.distribute_coupon(&admin, &bond_id, &0, &holders, &report_id, &1);
 
         let accrued1 = ce_client.accrued_credits(&bond_id, &holder1);
         let accrued2 = ce_client.accrued_credits(&bond_id, &holder2);

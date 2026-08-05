@@ -950,6 +950,7 @@ name = "nbbs-coupon-engine"
 version = "0.1.0"
 dependencies = [
  "nbbs-bond-issuer",
+ "nbbs-oracle-consumer",
  "nbbs-shared",
  "soroban-sdk",
 ]
@@ -960,6 +961,7 @@ version = "0.1.0"
 dependencies = [
  "nbbs-bond-issuer",
  "nbbs-coupon-engine",
+ "nbbs-oracle-consumer",
  "nbbs-shared",
  "soroban-sdk",
 ]

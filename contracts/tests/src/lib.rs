@@ -10,8 +10,8 @@ mod integration {
     use nbbs_dex_router::{DEXRouter, DEXRouterClient};
     use nbbs_credit_retirement::{CreditRetirement, CreditRetirementClient};
     use nbbs_shared::{
-        BondConfig, BondError, CreditType, OracleError, OracleReport,
-        ProjectStatus, RegistryError, ReportStatus,
+        BondConfig, BondError, CreditType, OracleError, ProjectStatus,
+        RegistryError, ReportStatus,
     };
 
     fn make_project_id(env: &Env, value: u8) -> BytesN<32> {
@@ -24,26 +24,6 @@ mod integration {
         let mut arr = [0u8; 32];
         arr[0] = value;
         BytesN::from_array(env, &arr)
-    }
-
-    fn make_signature(env: &Env) -> BytesN<64> {
-        BytesN::from_array(env, &[0u8; 64])
-    }
-
-    fn make_report(
-        env: &Env,
-        project_id: BytesN<32>,
-        carbon_sequestered: i128,
-    ) -> OracleReport {
-        OracleReport {
-            project_id,
-            period_start: 1000,
-            period_end: 2000,
-            carbon_sequestered,
-            methodology: Symbol::new(env, "verra_vcs"),
-            provider_signature: make_signature(env),
-            ipfs_evidence_hash: make_ipfs_hash(env, 1),
-        }
     }
 
     fn make_bond_config(
@@ -114,7 +94,7 @@ mod integration {
         #[test]
         fn test_happy_path() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -173,13 +153,12 @@ mod integration {
             contracts.ce_client.register_bond(&admin, &bond_id, &project_id, &0);
 
             let holders = soroban_sdk::vec![&env, bob.clone()];
-            let oracle_report = make_report(&env, project_id, 100_000);
             let result = contracts.ce_client.distribute_coupon(
                 &admin,
                 &bond_id,
                 &0,
                 &holders,
-                &oracle_report,
+                &report_id,
                 &1,
             );
             assert!(result.total_credits > 0);
@@ -214,7 +193,7 @@ mod integration {
         #[test]
         fn test_insufficient_supply() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -250,7 +229,7 @@ mod integration {
         #[test]
         fn test_challenge_flow() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -315,7 +294,7 @@ mod integration {
         #[test]
         fn test_order_full_fill() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -359,7 +338,7 @@ mod integration {
         #[test]
         fn test_order_partial_fill() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -414,7 +393,7 @@ mod integration {
         #[test]
         fn test_nonce_replay() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -450,7 +429,7 @@ mod integration {
         #[test]
         fn test_permission_checks() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
@@ -493,7 +472,7 @@ mod integration {
         #[test]
         fn test_unauthorized_oracle_operations() {
             let env = Env::default();
-            env.mock_all_auths();
+            env.mock_all_auths_allowing_non_root_auth();
 
             let admin = Address::generate(&env);
             let alice = Address::generate(&env);
