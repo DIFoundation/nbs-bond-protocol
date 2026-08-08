@@ -5,4 +5,5 @@ export const environment = {
   stellarHorizonUrl: 'https://horizon.stellar.org',
   networkPassphrase: 'Public Global Stellar Network ; September 2015',
   ipfsGateway: 'https://gateway.pinata.cloud/ipfs/',
+  adminAddress: 'G...' as const,
 };

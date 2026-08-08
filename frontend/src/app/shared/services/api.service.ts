@@ -7,8 +7,7 @@ import {
   Bond, Project, Order, PaginatedResponse,
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
   ClaimCreditsResponse, TransferResponse,
-  QuoteAsset, QuoteBalanceResponse, QuoteTransactionResponse,
-  DepositQuoteDto, WithdrawQuoteDto,
+  UndistributedTotalResponse, SweepUndistributedResponse,
 } from '../interfaces/bond.interface';
 
 @Injectable({ providedIn: 'root' })
@@ -67,6 +66,21 @@ export class ApiService {
     return this.http.post<TransferResponse>(
       `/api/bonds/${id}/transfer`,
       { fromAddress, toAddress, amount },
+      { headers: this.headers() },
+    );
+  }
+
+  getUndistributedTotal(id: number): Observable<UndistributedTotalResponse> {
+    return this.http.get<UndistributedTotalResponse>(
+      `/api/bonds/${id}/undistributed`,
+      { headers: this.headers() },
+    );
+  }
+
+  sweepUndistributed(id: number): Observable<SweepUndistributedResponse> {
+    return this.http.post<SweepUndistributedResponse>(
+      `/api/bonds/${id}/sweep-undistributed`,
+      {},
       { headers: this.headers() },
     );
   }

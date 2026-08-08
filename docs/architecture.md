@@ -133,6 +133,8 @@ CreditRetirement ──► CouponEngine (verify credit ownership)
 | GET | /bonds/:id/holders | List token holders |
 | POST | /bonds/:id/coupon | Trigger coupon distribution (by report_id) |
 | POST | /bonds/:id/claim | Claim accrued credits |
+| GET | /bonds/:id/undistributed | Get undistributed coupon dust total |
+| POST | /bonds/:id/sweep-undistributed | Admin: sweep undistributed coupon dust (admin only) |
 | POST | /bonds/:id/transfer | Transfer bond tokens to another address |
 | POST | /projects | Register project |
 | GET | /projects | List projects |
