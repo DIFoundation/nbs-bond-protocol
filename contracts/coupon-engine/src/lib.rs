@@ -14,6 +14,7 @@ pub enum DataKey {
     PeriodCount(u64),
     AccruedCredits(u64, Address),
     BondProject(u64),
+    UndistributedTotal(u64),
     Precision,
     BondIssuerAddress,
     OracleConsumerAddress,
@@ -29,6 +30,7 @@ pub struct PeriodInfo {
     pub total_credits_earned: i128,
     pub distributed: bool,
     pub report_id: u64,
+    pub undistributed: i128,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -199,10 +201,25 @@ impl CouponEngine {
             total_credits_earned: total_holder_credits,
             distributed: true,
             report_id,
+            undistributed: total_credits.saturating_sub(total_holder_credits),
         };
         env.storage()
             .persistent()
             .set(&DataKey::PeriodInfo(bond_id, period_index), &period_info);
+
+        if period_info.undistributed > 0 {
+            let undistributed_total: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::UndistributedTotal(bond_id))
+                .unwrap_or(0);
+            let new_total = undistributed_total
+                .checked_add(period_info.undistributed)
+                .ok_or(BondError::Overflow)?;
+            env.storage()
+                .persistent()
+                .set(&DataKey::UndistributedTotal(bond_id), &new_total);
+        }
 
         let count: u32 = env
             .storage()
@@ -276,6 +293,41 @@ impl CouponEngine {
             .persistent()
             .get(&DataKey::PeriodCount(bond_id))
             .unwrap_or(0)
+    }
+
+    pub fn get_undistributed_total(env: Env, bond_id: u64) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UndistributedTotal(bond_id))
+            .unwrap_or(0)
+    }
+
+    pub fn sweep_undistributed(
+        env: Env,
+        caller: Address,
+        bond_id: u64,
+        nonce: u64,
+    ) -> Result<i128, BondError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(BondError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        require_admin(&env, &caller)?;
+
+        let key = DataKey::UndistributedTotal(bond_id);
+        let total: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &0i128);
+
+        env.events().publish(
+            (Symbol::new(&env, "undistributed_swept"),),
+            (bond_id, total),
+        );
+
+        Ok(total)
     }
 }
 
@@ -786,6 +838,73 @@ mod test {
         let report_id2 = submit_verified_report(&t._env, &t, &project_id, 200_000, 2);
         t.client.distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id2, &2);
         assert_eq!(t.client.get_period_count(&bond_id), 2);
+    }
+
+    #[test]
+    fn test_distribute_leaves_dust_and_sweep_recovers_it() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 1);
+        let holder_a = Address::generate(&t._env);
+        let holder_b = Address::generate(&t._env);
+        let holder_c = Address::generate(&t._env);
+
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder_a, 1);
+        let issuer = nbbs_bond_issuer::BondIssuerClient::new(&t._env, &t.issuer_id);
+        issuer.subscribe(&holder_b, &bond_id, &1, &0);
+        issuer.subscribe(&holder_c, &bond_id, &1, &0);
+
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let holders = vec![&t._env, holder_a.clone(), holder_b.clone(), holder_c.clone()];
+
+        let result = t.client.distribute_coupon(
+            &t.admin,
+            &bond_id,
+            &0,
+            &holders,
+            &report_id,
+            &1,
+        );
+
+        assert_eq!(result.total_credits, 99);
+
+        let period_info = t.client.get_period_info(&bond_id, &0);
+        assert_eq!(period_info.undistributed, 1);
+
+        assert_eq!(t.client.get_undistributed_total(&bond_id), 1);
+
+        let swept = t.client.sweep_undistributed(&t.admin, &bond_id, &2);
+        assert_eq!(swept, 1);
+
+        assert_eq!(t.client.get_undistributed_total(&bond_id), 0);
+    }
+
+    #[test]
+    fn test_sweep_requires_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 1);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let holders = vec![&t._env, holder.clone()];
+        t.client.distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
+
+        let user = Address::generate(&t._env);
+        let result = t.client.try_sweep_undistributed(&user, &bond_id, &0);
+        assert_eq!(result, Err(Ok(BondError::Unauthorized)));
     }
 
     #[test]
