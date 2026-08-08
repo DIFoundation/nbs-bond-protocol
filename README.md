@@ -957,18 +957,18 @@ NbS Bond Protocol takes a pragmatic approach to compliance:
 
 ## 🗺️ Roadmap
 
-| Phase | Milestone | Target | Status |
-|---|---|---|---|
-| **Phase 1** | Core smart contracts (BondIssuer, CouponEngine) | Q2 2025 | 🔨 In Progress |
-| **Phase 2** | Oracle integration & testnet deployment | Q3 2025 | 📋 Planned |
-| **Phase 3** | Angular frontend MVP | Q3 2025 | 📋 Planned |
-| **Phase 4** | Stellar DEX secondary market integration | Q4 2025 | 📋 Planned |
-| **Phase 5** | Third-party smart contract audit | Q4 2025 | 📋 Planned |
-| **Phase 6** | Mainnet launch with pilot reforestation bond | Q1 2026 | 📋 Planned |
-| **Phase 7** | Blue carbon bond support | Q2 2026 | 🔭 Future |
-| **Phase 8** | Biodiversity credit coupon support | Q3 2026 | 🔭 Future |
-| **Phase 9** | Governance token & DAO transition | Q4 2026 | 🔭 Future |
-| **Phase 10** | Multi-chain bridge for credit portability | 2027 | 🔭 Future |
+| Phase | Milestone | Status |
+|---|---|---|
+| **Phase 1** | Core smart contracts (BondIssuer, CouponEngine, ProjectRegistry, CreditRetirement) | ✅ Delivered |
+| **Phase 2** | Oracle integration & testnet deployment | 🟡 In Progress — oracle adapters (Verra, satellite, IoT) and `OracleConsumer` with staking/slashing are live in code; testnet deployment scripts ready, not yet verified on a live network |
+| **Phase 3** | Angular frontend MVP | ✅ Delivered |
+| **Phase 4** | Stellar DEX secondary market integration (escrowed settlement via `DEXRouter`) | ✅ Delivered |
+| **Phase 5** | Third-party smart contract audit | 📋 Not started |
+| **Phase 6** | Mainnet launch with pilot reforestation bond | 📋 Not started — `deploy-mainnet.sh` scaffolded |
+| **Phase 7** | Blue carbon bond support | 🔭 Future |
+| **Phase 8** | Biodiversity credit coupon support | 🔭 Future (partial — `CreditType::Biodiversity` supported) |
+| **Phase 9** | Governance token & DAO transition | 🔭 Future (governance documented, multi-sig not on-chain) |
+| **Phase 10** | Multi-chain bridge for credit portability | 🔭 Future |
 
 ---
 
