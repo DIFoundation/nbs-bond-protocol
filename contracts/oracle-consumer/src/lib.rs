@@ -4,6 +4,7 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, En
 use nbbs_shared::{OracleError, ReportStatus};
 
 pub const CHALLENGE_WINDOW_SECONDS: u64 = 259200;
+pub const SLASH_PENALTY_PPM: i128 = 100_000;
 
 #[derive(Clone)]
 #[contracttype]
@@ -486,6 +487,10 @@ impl OracleConsumer {
             .instance()
             .set(&DataKey::Report(report_id), &report);
 
+        if resolution == ReportStatus::Rejected {
+            slash_provider(&env, &report.provider);
+        }
+
         env.events().publish(
             (Symbol::new(&env, "challenge_resolved"),),
             (report_id,),
@@ -565,6 +570,112 @@ impl OracleConsumer {
 
         Ok(())
     }
+
+    pub fn add_stake(
+        env: Env,
+        provider: Address,
+        amount: i128,
+        nonce: u64,
+    ) -> Result<(), OracleError> {
+        provider.require_auth();
+
+        let expected_nonce = get_nonce(&env, &provider);
+        if nonce != expected_nonce {
+            return Err(OracleError::InvalidNonce);
+        }
+        set_nonce(&env, &provider, expected_nonce + 1);
+
+        if amount <= 0 {
+            return Err(OracleError::InsufficientStake);
+        }
+
+        let mut p: OracleProvider = env
+            .storage()
+            .instance()
+            .get(&DataKey::Provider(provider.clone()))
+            .ok_or(OracleError::ProviderNotFound)?;
+
+        p.stake = p.stake.checked_add(amount).ok_or(OracleError::InsufficientStake)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::Provider(provider.clone()), &p);
+
+        env.events().publish(
+            (Symbol::new(&env, "stake_added"),),
+            (provider, amount),
+        );
+
+        Ok(())
+    }
+
+    pub fn withdraw_stake(
+        env: Env,
+        provider: Address,
+        amount: i128,
+        nonce: u64,
+    ) -> Result<(), OracleError> {
+        provider.require_auth();
+
+        let expected_nonce = get_nonce(&env, &provider);
+        if nonce != expected_nonce {
+            return Err(OracleError::InvalidNonce);
+        }
+        set_nonce(&env, &provider, expected_nonce + 1);
+
+        if amount <= 0 {
+            return Err(OracleError::InsufficientStake);
+        }
+
+        let mut p: OracleProvider = env
+            .storage()
+            .instance()
+            .get(&DataKey::Provider(provider.clone()))
+            .ok_or(OracleError::ProviderNotFound)?;
+
+        if p.stake < amount {
+            return Err(OracleError::InsufficientStake);
+        }
+        p.stake -= amount;
+        env.storage()
+            .instance()
+            .set(&DataKey::Provider(provider.clone()), &p);
+
+        env.events().publish(
+            (Symbol::new(&env, "stake_withdrawn"),),
+            (provider, amount),
+        );
+
+        Ok(())
+    }
+}
+
+fn slash_provider(env: &Env, provider: &Address) {
+    let mut p: OracleProvider = env
+        .storage()
+        .instance()
+        .get(&DataKey::Provider(provider.clone()))
+        .unwrap();
+
+    let mut penalty = p.stake * SLASH_PENALTY_PPM / 1_000_000;
+    if penalty <= 0 {
+        penalty = p.stake;
+    }
+    if penalty > p.stake {
+        penalty = p.stake;
+    }
+
+    p.stake -= penalty;
+    if p.stake == 0 {
+        p.active = false;
+    }
+    env.storage()
+        .instance()
+        .set(&DataKey::Provider(provider.clone()), &p);
+
+    env.events().publish(
+        (Symbol::new(&env, "provider_slashed"),),
+        (provider.clone(), penalty, p.stake, p.active),
+    );
 }
 
 #[cfg(test)]
@@ -1155,6 +1266,203 @@ mod test {
 
         client.set_signature_threshold(&admin, &3u32, &0);
         client.set_signature_threshold(&admin, &5u32, &1);
+    }
+
+    #[test]
+    fn test_add_and_withdraw_stake() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+        assert_eq!(client.get_provider(&provider).stake, 0);
+
+        client.add_stake(&provider, &50_000i128, &0);
+        assert_eq!(client.get_provider(&provider).stake, 50_000);
+
+        let result = client.try_withdraw_stake(&provider, &60_000i128, &1);
+        assert_eq!(result, Err(Ok(OracleError::InsufficientStake)));
+
+        client.withdraw_stake(&provider, &20_000i128, &1);
+        assert_eq!(client.get_provider(&provider).stake, 30_000);
+    }
+
+    #[test]
+    fn test_stake_requires_registered_provider() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let rogue = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        let result = client.try_add_stake(&rogue, &1_000i128, &0);
+        assert_eq!(result, Err(Ok(OracleError::ProviderNotFound)));
+    }
+
+    #[test]
+    fn test_stake_zero_amount_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+
+        let result = client.try_add_stake(&provider, &0i128, &0);
+        assert_eq!(result, Err(Ok(OracleError::InsufficientStake)));
+    }
+
+    #[test]
+    fn test_rejected_challenge_slashes_provider() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+        client.add_stake(&provider, &100_000i128, &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &1,
+        );
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        client.resolve_challenge(
+            &admin,
+            &report_id,
+            &ReportStatus::Rejected,
+            &1,
+        );
+
+        let slashed = client.get_provider(&provider);
+        assert_eq!(slashed.stake, 100_000 - 10_000);
+        assert!(slashed.active);
+
+        let report = client.get_report(&report_id);
+        assert_eq!(report.status, ReportStatus::Rejected);
+    }
+
+    #[test]
+    fn test_rejected_challenge_zeroes_stake_and_deactivates() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+        client.add_stake(&provider, &5i128, &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &1,
+        );
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        client.resolve_challenge(
+            &admin,
+            &report_id,
+            &ReportStatus::Rejected,
+            &1,
+        );
+
+        let slashed = client.get_provider(&provider);
+        assert_eq!(slashed.stake, 0);
+        assert!(!slashed.active);
+    }
+
+    #[test]
+    fn test_verified_resolution_does_not_slash() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+        client.add_stake(&provider, &100_000i128, &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &1,
+        );
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        client.resolve_challenge(
+            &admin,
+            &report_id,
+            &ReportStatus::Verified,
+            &1,
+        );
+
+        let provider_state = client.get_provider(&provider);
+        assert_eq!(provider_state.stake, 100_000);
+        assert!(provider_state.active);
     }
 
     fn register_provider_and_submit(
