@@ -5,6 +5,7 @@ import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
 import { OrderStatus } from './interfaces/marketplace.interface';
+import { xdr, scValToNative, nativeToScVal, Address } from '@stellar/stellar-sdk';
 
 describe('DexService', () => {
   let service: DexService;
@@ -41,10 +42,13 @@ describe('DexService', () => {
   describe('decodeOrder', () => {
     const seller = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 
-    it('maps the contract Order struct to an OrderResponse', () => {
+describe('DexService', () => {
+  describe('decodeOrder', () => {
+    it('maps the contract Order struct to an OrderResponse', async () => {
+      const { service } = await buildService(0);
       const raw = [
         BigInt(7),
-        seller,
+        SELLER,
         BigInt(3),
         BigInt(1000),
         BigInt(25),
@@ -56,7 +60,7 @@ describe('DexService', () => {
 
       expect((service as any).decodeOrder(raw)).toEqual({
         id: 7,
-        seller,
+        seller: SELLER,
         bondId: 3,
         amount: 1000,
         pricePerToken: 25,
@@ -72,10 +76,11 @@ describe('DexService', () => {
       [2, OrderStatus.Filled],
       [3, OrderStatus.Cancelled],
       [4, OrderStatus.Expired],
-    ])('maps status index %i to %s', (index, expected) => {
+    ])('maps status index %i to %s', async (index, expected) => {
+      const { service } = await buildService(0);
       const raw = [
         BigInt(1),
-        seller,
+        SELLER,
         BigInt(1),
         BigInt(1),
         BigInt(1),
