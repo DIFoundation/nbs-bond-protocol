@@ -1,0 +1,36 @@
+{
+  "name": "nbs-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone oracle adapters (Verra registry, satellite remote sensing, IoT sensors) that ingest, validate, and produce IPFS-anchored measurement reports.",
+  "scripts": {
+    "ingest:verra": "ts-node run.ts verra",
+    "ingest:satellite": "ts-node run.ts satellite",
+    "ingest:iot": "ts-node run.ts iot",
+    "ingest": "ts-node run.ts all",
+    "test": "jest",
+    "test:cov": "jest --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.0",
+    "@types/node": "^20.11.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.4.0"
+  },
+  "jest": {
+    "moduleFileExtensions": ["js", "json", "ts"],
+    "rootDir": ".",
+    "testMatch": ["**/*.spec.ts"],
+    "transform": { "^.+\\.ts$": "ts-jest" },
+    "collectCoverageFrom": ["**/*.ts", "../ipfs/**/*.ts"],
+    "coverageDirectory": "./coverage",
+    "testEnvironment": "node"
+  }
+}

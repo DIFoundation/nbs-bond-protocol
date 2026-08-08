@@ -1,0 +1,27 @@
+{
+  "scenes": [
+    {
+      "scene_id": "S2A_T18XUQ_20250212",
+      "capture_date": "2025-02-12",
+      "source": "sentinel-2",
+      "cloud_cover": 4.2,
+      "ndvi_mean": 0.42,
+      "ndwi_mean": 0.11
+    },
+    {
+      "scene_id": "S2A_T18XUQ_20250305",
+      "capture_date": "2025-03-05",
+      "source": "sentinel-2",
+      "cloud_cover": 12.8,
+      "ndvi_mean": 0.46,
+      "ndwi_mean": 0.14
+    },
+    {
+      "scene_id": "L8_T18XUQ_20250320",
+      "capture_date": "2025-03-20",
+      "source": "landsat-8",
+      "cloud_cover": 55.0,
+      "ndvi_mean": 0.9
+    }
+  ]
+}
