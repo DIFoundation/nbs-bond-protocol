@@ -9,6 +9,8 @@ import { DistributeCouponDto } from './dto/distribute-coupon.dto';
 import { ClaimCreditsDto } from './dto/claim-credits.dto';
 import { TransferBondDto } from './dto/transfer-bond.dto';
 import { PaginationDto } from '../common/dto/pagination.dto';
+import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { AdminGuard } from '../common/guards/admin.guard';
 import {
   BondResponse,
   SubscriptionResponse,
@@ -16,6 +18,8 @@ import {
   CouponDistributionResponse,
   ClaimCreditsResponse,
   TransferResponse,
+  UndistributedTotalResponse,
+  SweepUndistributedResponse,
 } from './interfaces/bond.interface';
 
 @Controller('bonds')
@@ -70,6 +74,22 @@ export class BondsController {
     @Body() dto: ClaimCreditsDto,
   ): Promise<ClaimCreditsResponse> {
     return this.bondsService.claimCredits(id, dto);
+  }
+
+  @Get(':id/undistributed')
+  async getUndistributedTotal(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<UndistributedTotalResponse> {
+    return this.bondsService.getUndistributedTotal(id);
+  }
+
+  @Post(':id/sweep-undistributed')
+  @UseGuards(JwtAuthGuard, AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  async sweepUndistributed(
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<SweepUndistributedResponse> {
+    return this.bondsService.sweepUndistributed(id);
   }
 
   @Post(':id/transfer')
