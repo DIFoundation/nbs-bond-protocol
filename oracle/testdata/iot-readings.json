@@ -1,0 +1,52 @@
+{
+  "readings": [
+    {
+      "device_id": "NBS-SOIL-001",
+      "timestamp": "2025-02-15T06:00:00Z",
+      "metrics": {
+        "soil_moisture": 32.5,
+        "temperature": 24.1,
+        "humidity": 68.0,
+        "soil_carbon_ppm": 4200,
+        "water_table_cm": 185,
+        "co2_ppm": 410
+      }
+    },
+    {
+      "device_id": "NBS-SOIL-001",
+      "timestamp": "2025-03-15T06:00:00Z",
+      "metrics": {
+        "soil_moisture": 31.9,
+        "temperature": 26.4,
+        "humidity": 71.0,
+        "soil_carbon_ppm": 4350,
+        "water_table_cm": 172,
+        "co2_ppm": 408
+      }
+    },
+    {
+      "device_id": "NBS-SOIL-002",
+      "timestamp": "2025-02-28T06:00:00Z",
+      "metrics": {
+        "soil_moisture": 29.0,
+        "temperature": 25.0,
+        "humidity": 60.0,
+        "soil_carbon_ppm": 3900,
+        "water_table_cm": 200,
+        "co2_ppm": null
+      }
+    },
+    {
+      "device_id": "NBS-SOIL-002",
+      "timestamp": "2025-03-28T06:00:00Z",
+      "metrics": {
+        "soil_moisture": 30.2,
+        "temperature": 25.8,
+        "humidity": 63.0,
+        "soil_carbon_ppm": 4050,
+        "water_table_cm": 190,
+        "co2_ppm": 411
+      }
+    }
+  ]
+}

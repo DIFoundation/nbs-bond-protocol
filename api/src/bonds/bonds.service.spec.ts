@@ -110,4 +110,83 @@ describe('BondsService', () => {
       expect(scValToNative(args[4])).toBe(BigInt(7));
     });
   });
+
+  describe('getUndistributedTotal', () => {
+    it('reads get_undistributed_total from the coupon engine', async () => {
+      const contractService = {
+        simulateCall: jest.fn().mockResolvedValue(
+          nativeToScVal(BigInt(42), { type: 'i128' }),
+        ),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          {
+            provide: NonceService,
+            useValue: { next: jest.fn().mockResolvedValue(0) },
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+      const result = await svc.getUndistributedTotal(3);
+
+      const [options] = contractService.simulateCall.mock.calls[0];
+
+      expect(options.contractAddress).toBe('');
+      expect(options.method).toBe('get_undistributed_total');
+      expect(options.args).toEqual([nativeToScVal(BigInt(3), { type: 'u64' })]);
+      expect(result).toEqual({ bondId: 3, undistributedTotal: 42 });
+    });
+  });
+
+  describe('sweepUndistributed arg encoding', () => {
+    it('invokes sweep_undistributed as the admin and returns swept total', async () => {
+      const contractService = {
+        invokeContractMethod: jest.fn().mockResolvedValue({
+          result: nativeToScVal(BigInt(42), { type: 'i128' }),
+          transactionHash: '0xabc',
+          successful: true,
+        }),
+      };
+      const stellarService = {
+        getKeypairFromSecret: jest.fn().mockReturnValue({
+          publicKey: () =>
+            'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        }),
+      };
+
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: stellarService },
+          {
+            provide: NonceService,
+            useValue: { next: jest.fn().mockResolvedValue(0) },
+          },
+        ],
+      }).compile();
+
+      const svc = moduleRef.get(BondsService);
+      const result = await svc.sweepUndistributed(3);
+
+      const [contractAddress, method, callerSecret, args, nonce] =
+        contractService.invokeContractMethod.mock.calls[0];
+
+      expect(contractAddress).toBe('');
+      expect(method).toBe('sweep_undistributed');
+      expect(callerSecret).toBe('');
+      expect(args.length).toBe(2);
+      expect(scValToNative(args[0])).toBe(
+        'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      );
+      expect(scValToNative(args[1])).toBe(BigInt(3));
+      expect(nonce).toBe(0);
+      expect(result).toEqual({ bondId: 3, swept: 42, transactionHash: '0xabc' });
+    });
+  });
 });

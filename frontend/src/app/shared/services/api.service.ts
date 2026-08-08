@@ -7,6 +7,7 @@ import {
   Bond, Project, Order, PaginatedResponse,
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
   ClaimCreditsResponse, TransferResponse,
+  UndistributedTotalResponse, SweepUndistributedResponse,
 } from '../interfaces/bond.interface';
 
 @Injectable({ providedIn: 'root' })
@@ -69,6 +70,21 @@ export class ApiService {
     );
   }
 
+  getUndistributedTotal(id: number): Observable<UndistributedTotalResponse> {
+    return this.http.get<UndistributedTotalResponse>(
+      `/api/bonds/${id}/undistributed`,
+      { headers: this.headers() },
+    );
+  }
+
+  sweepUndistributed(id: number): Observable<SweepUndistributedResponse> {
+    return this.http.post<SweepUndistributedResponse>(
+      `/api/bonds/${id}/sweep-undistributed`,
+      {},
+      { headers: this.headers() },
+    );
+  }
+
   getProjects(page = 1, limit = 20): Observable<PaginatedResponse<Project>> {
     return this.http.get<PaginatedResponse<Project>>('/api/projects', {
       params: { page, limit },
@@ -97,5 +113,20 @@ export class ApiService {
 
   buyBondTokens(data: BuyBondDto): Observable<void> {
     return this.http.post<void>('/api/marketplace/buy', data, { headers: this.headers() });
+  }
+
+  getQuoteBalance(asset: QuoteAsset = 'USDC'): Observable<QuoteBalanceResponse> {
+    return this.http.get<QuoteBalanceResponse>('/api/marketplace/quote-balance', {
+      params: { asset },
+      headers: this.headers(),
+    });
+  }
+
+  depositQuote(data: DepositQuoteDto): Observable<QuoteTransactionResponse> {
+    return this.http.post<QuoteTransactionResponse>('/api/marketplace/deposit', data, { headers: this.headers() });
+  }
+
+  withdrawQuote(data: WithdrawQuoteDto): Observable<QuoteTransactionResponse> {
+    return this.http.post<QuoteTransactionResponse>('/api/marketplace/withdraw', data, { headers: this.headers() });
   }
 }

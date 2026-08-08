@@ -9,10 +9,14 @@ import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
 import { ListBondDto } from './dto/list-bond.dto';
 import { BuyBondDto } from './dto/buy-bond.dto';
+import { DepositQuoteDto } from './dto/deposit-quote.dto';
+import { WithdrawQuoteDto } from './dto/withdraw-quote.dto';
 import {
   OrderResponse,
   OrderStatus,
   QuoteAsset,
+  QuoteBalanceResponse,
+  QuoteTransactionResponse,
 } from './interfaces/marketplace.interface';
 import { createClient, RedisClientType } from '@redis/client';
 import { nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
@@ -246,6 +250,62 @@ export class DexService {
 
     await this.redis.setEx(cacheKey, 60, JSON.stringify(order));
     return order;
+  }
+
+  async getQuoteBalance(
+    address: string,
+    asset: QuoteAsset = 'USDC',
+  ): Promise<QuoteBalanceResponse> {
+    const balanceScVal = await this.contractService.simulateCall({
+      contractAddress: DEX_ROUTER(),
+      method: 'get_quote_balance',
+      args: [
+        Address.fromString(address).toScVal(),
+        nativeToScVal(asset, { type: 'symbol' }),
+      ],
+    });
+    const balance = Number(scValToNative(balanceScVal));
+    return { address, asset, balance };
+  }
+
+  async depositQuote(
+    dto: DepositQuoteDto,
+    callerAddress: string,
+  ): Promise<QuoteTransactionResponse> {
+    const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
+
+    const { transactionHash } = await this.contractService.invokeContractMethod(
+      DEX_ROUTER(), 'deposit_quote', adminSecret,
+      [
+        Address.fromString(callerAddress).toScVal(),
+        nativeToScVal(dto.asset, { type: 'symbol' }),
+        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
+      ],
+      nonce,
+    );
+
+    return { address: callerAddress, asset: dto.asset, amount: dto.amount, transactionHash };
+  }
+
+  async withdrawQuote(
+    dto: WithdrawQuoteDto,
+    callerAddress: string,
+  ): Promise<QuoteTransactionResponse> {
+    const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
+
+    const { transactionHash } = await this.contractService.invokeContractMethod(
+      DEX_ROUTER(), 'withdraw_quote', adminSecret,
+      [
+        Address.fromString(callerAddress).toScVal(),
+        nativeToScVal(dto.asset, { type: 'symbol' }),
+        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
+      ],
+      nonce,
+    );
+
+    return { address: callerAddress, asset: dto.asset, amount: dto.amount, transactionHash };
   }
 
   private decodeOrder(data: any[]): OrderResponse {

@@ -3,12 +3,14 @@ import { CommonModule } from '@angular/common';
 import { RouterModule, Router, ActivatedRoute } from '@angular/router';
 import { FormBuilder, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ApiService } from '../../shared/services/api.service';
+import { WalletService } from '../../auth/wallet.service';
+import { QuoteBalanceComponent } from '../../shared/components/quote-balance/quote-balance.component';
 import { Bond } from '../../shared/interfaces/bond.interface';
 
 @Component({
   selector: 'app-marketplace-sell',
   standalone: true,
-  imports: [CommonModule, RouterModule, ReactiveFormsModule],
+  imports: [CommonModule, RouterModule, ReactiveFormsModule, QuoteBalanceComponent],
   template: `
     <div class="sell-page">
       <a class="back-link" routerLink="/marketplace">← Back to Marketplace</a>
@@ -16,6 +18,12 @@ import { Bond } from '../../shared/interfaces/bond.interface';
 
       @if (error()) {
         <div class="error-banner">{{ error() }}</div>
+      }
+
+      @if (walletService.isConnected()) {
+        <div class="quote-section">
+          <app-quote-balance />
+        </div>
       }
 
       <form class="sell-form" [formGroup]="form" (ngSubmit)="onSubmit()">
@@ -78,6 +86,7 @@ import { Bond } from '../../shared/interfaces/bond.interface';
     .back-link:hover { text-decoration: underline; }
     .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 24px; }
     .error-banner { background: #fef2f2; color: #ef4444; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 0.875rem; }
+    .quote-section { margin-bottom: 24px; }
     .sell-form { background: #fff; border-radius: 12px; padding: 32px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
     .form-group { display: flex; flex-direction: column; margin-bottom: 20px; flex: 1; }
     .form-label { font-size: 0.8125rem; font-weight: 600; color: #1a1a2e; margin-bottom: 6px; }
@@ -100,6 +109,7 @@ export class MarketplaceSellComponent implements OnInit {
   private readonly apiService = inject(ApiService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
+  readonly walletService = inject(WalletService);
 
   readonly bonds = signal<Bond[]>([]);
   readonly submitting = signal(false);

@@ -24,13 +24,15 @@ export interface Project {
   createdAt: string;
 }
 
+export type QuoteAsset = 'USDC' | 'XLM';
+
 export interface Order {
   id: number;
   seller: string;
   bondId: number;
   amount: number;
   pricePerToken: number;
-  quoteAsset: 'USDC' | 'XLM';
+  quoteAsset: QuoteAsset;
   status: 'Open' | 'PartiallyFilled' | 'Filled' | 'Cancelled' | 'Expired';
   createdAt: string;
 }
@@ -62,6 +64,17 @@ export interface TransferResponse {
   transactionHash: string;
 }
 
+export interface UndistributedTotalResponse {
+  bondId: number;
+  undistributedTotal: number;
+}
+
+export interface SweepUndistributedResponse {
+  bondId: number;
+  swept: number;
+  transactionHash: string;
+}
+
 export interface CreateProjectDto {
   name: string;
   methodology: string;
@@ -84,5 +97,30 @@ export interface BuyBondDto {
   orderId: number;
   amount: number;
   maxPrice: number;
+  nonce?: number;
+}
+
+export interface QuoteBalanceResponse {
+  address: string;
+  asset: QuoteAsset;
+  balance: number;
+}
+
+export interface QuoteTransactionResponse {
+  address: string;
+  asset: QuoteAsset;
+  amount: number;
+  transactionHash?: string;
+}
+
+export interface DepositQuoteDto {
+  asset: QuoteAsset;
+  amount: number;
+  nonce?: number;
+}
+
+export interface WithdrawQuoteDto {
+  asset: QuoteAsset;
+  amount: number;
   nonce?: number;
 }

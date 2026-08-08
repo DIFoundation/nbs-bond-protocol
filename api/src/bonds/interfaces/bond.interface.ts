@@ -57,3 +57,14 @@ export interface TransferResponse {
   amount: number;
   transactionHash: string;
 }
+
+export interface UndistributedTotalResponse {
+  bondId: number;
+  undistributedTotal: number;
+}
+
+export interface SweepUndistributedResponse {
+  bondId: number;
+  swept: number;
+  transactionHash: string;
+}

@@ -19,6 +19,19 @@ export interface OrderResponse {
   createdAt: string;
 }
 
+export interface QuoteBalanceResponse {
+  address: string;
+  asset: QuoteAsset;
+  balance: number;
+}
+
+export interface QuoteTransactionResponse {
+  address: string;
+  asset: QuoteAsset;
+  amount: number;
+  transactionHash?: string;
+}
+
 export interface PriceFeedResponse {
   bondId: number;
   bestPrice: number;
