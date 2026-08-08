@@ -150,6 +150,12 @@ impl BondIssuer {
             .get(&DataKey::BondConfig(bond_id))
             .ok_or(BondError::BondNotFound)?;
 
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
         let mut state: BondState = env
             .storage()
             .instance()
@@ -157,6 +163,10 @@ impl BondIssuer {
             .ok_or(BondError::BondNotFound)?;
 
         if state.status != BondStatus::Active {
+            return Err(BondError::BondAlreadyMatured);
+        }
+
+        if env.ledger().timestamp() >= config.maturity_date {
             return Err(BondError::BondAlreadyMatured);
         }
 
@@ -210,12 +220,22 @@ impl BondIssuer {
             return Err(BondError::ZeroAmount);
         }
 
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
         let state: BondState = env
             .storage()
             .instance()
             .get(&DataKey::BondState(bond_id))
             .ok_or(BondError::BondNotFound)?;
         if state.status != BondStatus::Active {
+            return Err(BondError::BondAlreadyMatured);
+        }
+
+        if env.ledger().timestamp() >= config.maturity_date {
             return Err(BondError::BondAlreadyMatured);
         }
 
@@ -393,6 +413,12 @@ impl BondIssuer {
 
         require_admin(&env, &caller)?;
 
+        let config: BondConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondConfig(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
         let mut state: BondState = env
             .storage()
             .instance()
@@ -401,6 +427,10 @@ impl BondIssuer {
 
         if state.status != BondStatus::Active {
             return Err(BondError::BondAlreadyMatured);
+        }
+
+        if env.ledger().timestamp() < config.maturity_date {
+            return Err(BondError::Overflow);
         }
 
         state.status = BondStatus::Matured;
@@ -549,10 +579,53 @@ mod test {
         let bond_id = client.issue_bond(&admin, &config, &0);
 
         client.subscribe(&user, &bond_id, &5000, &0);
+        env.ledger().set_timestamp(config.maturity_date);
         client.mature_bond(&admin, &bond_id, &1);
 
         let state = client.get_bond_state(&bond_id);
         assert_eq!(state.status, BondStatus::Matured);
+    }
+
+    #[test]
+    fn test_mature_bond_before_maturity_rejected() {
+        let (env, client, admin, user) = setup();
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &5000, &0);
+        env.ledger().set_timestamp(config.maturity_date - 1);
+
+        let result = client.try_mature_bond(&admin, &bond_id, &1);
+        assert_eq!(result, Err(Ok(BondError::Overflow)));
+
+        let state = client.get_bond_state(&bond_id);
+        assert_eq!(state.status, BondStatus::Active);
+    }
+
+    #[test]
+    fn test_subscribe_after_maturity_date_rejected() {
+        let (env, client, admin, user) = setup();
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        env.ledger().set_timestamp(config.maturity_date);
+
+        let result = client.try_subscribe(&user, &bond_id, &1000, &0);
+        assert_eq!(result, Err(Ok(BondError::BondAlreadyMatured)));
+    }
+
+    #[test]
+    fn test_transfer_after_maturity_date_rejected() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        env.ledger().set_timestamp(config.maturity_date);
+
+        let result = client.try_transfer(&user, &user2, &bond_id, &100);
+        assert_eq!(result, Err(Ok(BondError::BondAlreadyMatured)));
     }
 
     #[test]
@@ -562,6 +635,7 @@ mod test {
         let bond_id = client.issue_bond(&admin, &config, &0);
 
         client.subscribe(&user, &bond_id, &3000, &0);
+        env.ledger().set_timestamp(config.maturity_date);
         client.mature_bond(&admin, &bond_id, &1);
 
         client.redeem(&user, &bond_id, &1000, &1);
@@ -592,6 +666,7 @@ mod test {
         let bond_id = client.issue_bond(&admin, &config, &0);
 
         client.subscribe(&user, &bond_id, &1000, &0);
+        env.ledger().set_timestamp(config.maturity_date);
         client.mature_bond(&admin, &bond_id, &1);
 
         let result = client.try_redeem(&user, &bond_id, &2000, &1);
@@ -743,6 +818,7 @@ mod test {
         let bond_id = client.issue_bond(&admin, &config, &0);
 
         client.subscribe(&user, &bond_id, &1000, &0);
+        env.ledger().set_timestamp(config.maturity_date);
         client.mature_bond(&admin, &bond_id, &1);
 
         let result = client.try_transfer(&user, &user2, &bond_id, &100);
