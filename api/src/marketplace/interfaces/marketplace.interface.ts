@@ -6,13 +6,15 @@ export enum OrderStatus {
   Expired = 'Expired',
 }
 
+export type QuoteAsset = 'USDC' | 'XLM';
+
 export interface OrderResponse {
   id: number;
   seller: string;
   bondId: number;
   amount: number;
   pricePerToken: number;
-  quoteAsset: 'USDC' | 'XLM';
+  quoteAsset: QuoteAsset;
   status: OrderStatus;
   createdAt: string;
 }
@@ -37,4 +39,10 @@ export interface SlippageResponse {
   averagePrice: number;
   estimatedTotal: number;
   slippagePercent: number;
+}
+
+export interface QuoteBalanceResponse {
+  address: string;
+  quoteAsset: QuoteAsset;
+  balance: number;
 }

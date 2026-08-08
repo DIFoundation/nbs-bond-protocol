@@ -6,11 +6,14 @@ import { DexService } from './dex.service';
 import { LiquidityService } from './liquidity.service';
 import { ListBondDto } from './dto/list-bond.dto';
 import { BuyBondDto } from './dto/buy-bond.dto';
+import { QuoteTxDto } from './dto/quote-tx.dto';
 import {
   OrderResponse,
   PriceFeedResponse,
   PriceLevel,
   SlippageResponse,
+  QuoteBalanceResponse,
+  QuoteAsset,
 } from './interfaces/marketplace.interface';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
 
@@ -54,6 +57,37 @@ export class MarketplaceController {
   ): Promise<OrderResponse> {
     const buyerAddress = req.headers['x-wallet-address'] as string || '';
     return this.dexService.buyBondTokens(dto, buyerAddress);
+  }
+
+  @Post('escrow/deposit')
+  @HttpCode(HttpStatus.OK)
+  async depositQuote(
+    @Body() dto: QuoteTxDto,
+    @Req() req: any,
+  ): Promise<QuoteBalanceResponse> {
+    const address = req.headers['x-wallet-address'] as string || '';
+    const balance = await this.dexService.depositQuote(address, dto.quoteAsset, dto.amount);
+    return { address, quoteAsset: dto.quoteAsset, balance };
+  }
+
+  @Post('escrow/withdraw')
+  @HttpCode(HttpStatus.OK)
+  async withdrawQuote(
+    @Body() dto: QuoteTxDto,
+    @Req() req: any,
+  ): Promise<QuoteBalanceResponse> {
+    const address = req.headers['x-wallet-address'] as string || '';
+    const balance = await this.dexService.withdrawQuote(address, dto.quoteAsset, dto.amount);
+    return { address, quoteAsset: dto.quoteAsset, balance };
+  }
+
+  @Get('escrow/:address')
+  async getQuoteBalance(
+    @Param('address') address: string,
+    @Query('quoteAsset') quoteAsset: QuoteAsset = 'USDC',
+  ): Promise<QuoteBalanceResponse> {
+    const balance = await this.dexService.getQuoteBalance(address, quoteAsset);
+    return { address, quoteAsset, balance };
   }
 
   @Delete('orders/:id')

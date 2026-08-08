@@ -1,4 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
@@ -7,12 +12,27 @@ import { BuyBondDto } from './dto/buy-bond.dto';
 import {
   OrderResponse,
   OrderStatus,
+  QuoteAsset,
 } from './interfaces/marketplace.interface';
 import { createClient, RedisClientType } from '@redis/client';
 import { nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
 
 const DEX_ROUTER = () => process.env.DEX_ROUTER_ADDRESS || '';
+
+const DEX_ERROR_CODE = {
+  NotInitialized: 1,
+  Unauthorized: 2,
+  InvalidNonce: 3,
+  OrderNotFound: 4,
+  OrderAlreadyFilled: 5,
+  InsufficientBalance: 6,
+  SelfBuyNotAllowed: 7,
+  OrderExpired: 8,
+  ZeroAmount: 9,
+  InsufficientFunds: 10,
+  Overflow: 11,
+} as const;
 
 @Injectable()
 export class DexService {
@@ -99,20 +119,98 @@ export class DexService {
     return this.getOrder(orderId);
   }
 
+  async getQuoteBalance(address: string, quoteAsset: QuoteAsset): Promise<number> {
+    const result = await this.contractService.simulateCall({
+      contractAddress: DEX_ROUTER(),
+      method: 'get_quote_balance',
+      args: [
+        Address.fromString(address).toScVal(),
+        nativeToScVal(quoteAsset, { type: 'symbol' }),
+      ],
+    });
+
+    return Number(scValToNative(result));
+  }
+
+  async depositQuote(
+    address: string,
+    quoteAsset: QuoteAsset,
+    amount: number,
+  ): Promise<number> {
+    const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), address);
+
+    try {
+      await this.contractService.invokeContractMethod(
+        DEX_ROUTER(), 'deposit_quote', adminSecret,
+        [
+          Address.fromString(address).toScVal(),
+          nativeToScVal(quoteAsset, { type: 'symbol' }),
+          nativeToScVal(BigInt(amount), { type: 'i128' }),
+        ],
+        nonce,
+      );
+    } catch (error) {
+      throw this.mapDexError(error);
+    }
+
+    return this.getQuoteBalance(address, quoteAsset);
+  }
+
+  async withdrawQuote(
+    address: string,
+    quoteAsset: QuoteAsset,
+    amount: number,
+  ): Promise<number> {
+    const adminSecret = this.getAdminSecret();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), address);
+
+    try {
+      await this.contractService.invokeContractMethod(
+        DEX_ROUTER(), 'withdraw_quote', adminSecret,
+        [
+          Address.fromString(address).toScVal(),
+          nativeToScVal(quoteAsset, { type: 'symbol' }),
+          nativeToScVal(BigInt(amount), { type: 'i128' }),
+        ],
+        nonce,
+      );
+    } catch (error) {
+      throw this.mapDexError(error);
+    }
+
+    return this.getQuoteBalance(address, quoteAsset);
+  }
+
   async buyBondTokens(dto: BuyBondDto, buyerAddress: string): Promise<OrderResponse> {
+    const order = await this.getOrder(dto.orderId);
+    const proceeds = order.pricePerToken * dto.amount;
+
+    const escrowed = await this.getQuoteBalance(buyerAddress, order.quoteAsset);
+    if (escrowed < proceeds) {
+      throw new BadRequestException(
+        `Insufficient escrowed ${order.quoteAsset}: required ${proceeds}, escrowed ${escrowed}. ` +
+        'Call POST /marketplace/escrow/deposit before purchasing.',
+      );
+    }
+
     const adminSecret = this.getAdminSecret();
     const nonce = await this.nonceService.next(DEX_ROUTER(), buyerAddress);
 
-    await this.contractService.invokeContractMethod(
-      DEX_ROUTER(), 'execute_purchase', adminSecret,
-      [
-        Address.fromString(buyerAddress).toScVal(),
-        nativeToScVal(BigInt(dto.orderId), { type: 'u64' }),
-        nativeToScVal(BigInt(dto.maxPrice), { type: 'i128' }),
-        nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
-      ],
-      nonce,
-    );
+    try {
+      await this.contractService.invokeContractMethod(
+        DEX_ROUTER(), 'execute_purchase', adminSecret,
+        [
+          Address.fromString(buyerAddress).toScVal(),
+          nativeToScVal(BigInt(dto.orderId), { type: 'u64' }),
+          nativeToScVal(BigInt(dto.maxPrice), { type: 'i128' }),
+          nativeToScVal(BigInt(dto.amount), { type: 'i128' }),
+        ],
+        nonce,
+      );
+    } catch (error) {
+      throw this.mapDexError(error);
+    }
 
     await this.redis.del(`orders:*`);
     return this.getOrder(dto.orderId);
@@ -157,7 +255,7 @@ export class DexService {
       bondId: Number(data[2]),
       amount: Number(data[3]),
       pricePerToken: Number(data[4]),
-      quoteAsset: data[5] as 'USDC' | 'XLM',
+      quoteAsset: data[5] as QuoteAsset,
       status: this.orderStatusFromIndex(Number(data[6])),
       createdAt: new Date(Number(data[7]) * 1000).toISOString(),
     };
@@ -177,5 +275,24 @@ export class DexService {
 
   private getAdminSecret(): string {
     return process.env.ADMIN_SECRET_KEY || '';
+  }
+
+  private mapDexError(error: unknown): Error {
+    const message = error instanceof Error ? error.message : String(error);
+    const match = message.match(/#(\d+)/) ?? message.match(/Error\(-(\d+)/);
+    const code = match ? Number(match[1]) : undefined;
+
+    if (code === DEX_ERROR_CODE.InsufficientFunds) {
+      return new HttpException(
+        'Insufficient escrowed funds. Call POST /marketplace/escrow/deposit before purchasing.',
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
+    if (error instanceof HttpException) {
+      return error;
+    }
+
+    return new BadRequestException(message);
   }
 }
