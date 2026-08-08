@@ -1,10 +1,11 @@
-import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick, discardPeriodicTasks } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { ActivatedRoute } from '@angular/router';
 import { of } from 'rxjs';
 import { BondDetailComponent } from './bond-detail.component';
 import { ApiService } from '../../shared/services/api.service';
 import { WalletService } from '../../auth/wallet.service';
+import { Bond } from '../../shared/interfaces/bond.interface';
 import { environment } from '../../../environments/environment';
 
 describe('BondDetailComponent', () => {
@@ -19,11 +20,21 @@ describe('BondDetailComponent', () => {
     couponSchedule: [1000000, 2000000],
     creditType: 'Carbon' as const,
     maturityDate: 3000000,
+    maturityStatus: 'Active' as const,
     totalSupply: 10000,
     totalSubscribed: 5000,
     status: 'Active' as const,
     createdAt: '2026-01-01T00:00:00.000Z',
   };
+
+  const futureBond = (
+    overrides: Partial<Pick<Bond, 'maturityDate' | 'maturityStatus'>> = {},
+  ): Bond => ({
+    ...bond,
+    maturityDate: Math.floor(Date.now() / 1000) + 3 * 86400,
+    maturityStatus: 'Active',
+    ...overrides,
+  });
 
   beforeEach(async () => {
     apiService = jasmine.createSpyObj('ApiService', [
@@ -54,6 +65,10 @@ describe('BondDetailComponent', () => {
     walletService = TestBed.inject(WalletService);
   });
 
+  afterEach(() => {
+    fixture?.destroy();
+  });
+
   const createFixture = (): void => {
     fixture = TestBed.createComponent(BondDetailComponent);
     fixture.detectChanges();
@@ -75,6 +90,7 @@ describe('BondDetailComponent', () => {
     expect(section).not.toBeNull();
     expect(section?.textContent).toContain('7');
     expect(section?.textContent).toContain('Sweep Undistributed');
+    discardPeriodicTasks();
   }));
 
   it('hides the admin panel from non-admin wallets', fakeAsync(() => {
@@ -85,6 +101,7 @@ describe('BondDetailComponent', () => {
 
     expect(apiService.getUndistributedTotal).not.toHaveBeenCalled();
     expect(adminSection()).toBeNull();
+    discardPeriodicTasks();
   }));
 
   it('sweeps undistributed credits only after confirmation', fakeAsync(() => {
@@ -103,6 +120,7 @@ describe('BondDetailComponent', () => {
     expect(confirmSpy).toHaveBeenCalled();
     expect(apiService.sweepUndistributed).toHaveBeenCalledWith(1);
     expect(fixture.nativeElement.textContent).toContain('0xabc');
+    discardPeriodicTasks();
   }));
 
   it('does not sweep when confirmation is declined', fakeAsync(() => {
@@ -116,5 +134,60 @@ describe('BondDetailComponent', () => {
     sweepBtn.click();
 
     expect(apiService.sweepUndistributed).not.toHaveBeenCalled();
+    discardPeriodicTasks();
   }));
+
+  it('shows a live countdown for a bond that has not reached maturity', fakeAsync(() => {
+    apiService.getBond.and.returnValue(of(futureBond()));
+    createFixture();
+
+    const banner = fixture.nativeElement.querySelector(
+      '.maturity-banner',
+    ) as HTMLElement;
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain('Matures in');
+    expect(banner.textContent).toContain('d');
+    discardPeriodicTasks();
+  }));
+
+  it('shows the frozen-for-trading state and hides subscribe/transfer after maturity', fakeAsync(() => {
+    apiService.getBond.and.returnValue(
+      of(futureBond({ maturityStatus: 'Matured' })),
+    );
+    createFixture();
+
+    const banner = fixture.nativeElement.querySelector(
+      '.maturity-banner.frozen',
+    ) as HTMLElement;
+    expect(banner).not.toBeNull();
+    expect(banner.textContent).toContain('Frozen for trading');
+
+    const text = fixture.nativeElement.textContent;
+    expect(text).toContain('frozen for trading');
+    expect(text).toContain('Transfers are disabled');
+    expect(fixture.nativeElement.querySelector('.subscribe-btn')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.transfer-btn')).toBeNull();
+    discardPeriodicTasks();
+  }));
+
+  it('disables subscribe/transfer once the maturity date has elapsed, even when status is still Active', fakeAsync(() => {
+    apiService.getBond.and.returnValue(
+      of(futureBond({ maturityDate: Math.floor(Date.now() / 1000) - 10 })),
+    );
+    createFixture();
+
+    expect(fixture.nativeElement.textContent).toContain('frozen for trading');
+    expect(fixture.nativeElement.querySelector('.subscribe-btn')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.transfer-btn')).toBeNull();
+    discardPeriodicTasks();
+  }));
+
+  it('formats the countdown in days, hours, minutes and seconds', () => {
+    const component = TestBed.createComponent(BondDetailComponent).componentInstance;
+    expect(component.formatCountdown(2 * 86400000 + 3 * 3600000 + 4 * 60000 + 5000)).toBe(
+      '2d 3h 4m 5s',
+    );
+    expect(component.formatCountdown(5 * 1000)).toBe('5s');
+    expect(component.formatCountdown(0)).toBe('');
+  });
 });

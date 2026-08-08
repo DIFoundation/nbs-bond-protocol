@@ -5,6 +5,7 @@ export interface Bond {
   couponSchedule: number[];
   creditType: 'Carbon' | 'Biodiversity' | 'Basket';
   maturityDate: number;
+  maturityStatus: 'Active' | 'Matured';
   totalSupply: number;
   totalSubscribed: number;
   status: 'Active' | 'Matured' | 'Defaulted';

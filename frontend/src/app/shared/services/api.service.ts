@@ -8,6 +8,8 @@ import {
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
   ClaimCreditsResponse, TransferResponse,
   UndistributedTotalResponse, SweepUndistributedResponse,
+  QuoteBalanceResponse, QuoteTransactionResponse,
+  QuoteAsset, DepositQuoteDto, WithdrawQuoteDto,
 } from '../interfaces/bond.interface';
 
 @Injectable({ providedIn: 'root' })

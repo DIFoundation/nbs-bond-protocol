@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { BadRequestException } from '@nestjs/common';
 import { xdr, scValToNative, nativeToScVal } from '@stellar/stellar-sdk';
 
 jest.mock('@redis/client', () => {
@@ -187,6 +188,133 @@ describe('BondsService', () => {
       expect(scValToNative(args[1])).toBe(BigInt(3));
       expect(nonce).toBe(0);
       expect(result).toEqual({ bondId: 3, swept: 42, transactionHash: '0xabc' });
+    });
+  });
+
+  describe('mature', () => {
+    const adminStub = () => ({
+      getKeypairFromSecret: jest.fn().mockReturnValue({
+        publicKey: () =>
+          'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      }),
+    });
+
+    const buildModule = async (contractService: any) => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: adminStub() },
+          {
+            provide: NonceService,
+            useValue: { next: jest.fn().mockResolvedValue(0) },
+          },
+        ],
+      }).compile();
+      return moduleRef.get(BondsService);
+    };
+
+    it('maps a before-maturity Overflow to a 400 with a clear message', async () => {
+      const contractService = {
+        invokeContractMethod: jest.fn().mockRejectedValue(
+          new BadRequestException(
+            'Contract error on TEST.mature_bond (contract error code 9)',
+          ),
+        ),
+      };
+
+      const svc = await buildModule(contractService);
+
+      await expect(svc.mature(7)).rejects.toMatchObject({
+        status: 400,
+        message: expect.stringContaining(
+          'Bond #7 cannot be matured before its maturity date',
+        ),
+      });
+    });
+
+    it('rethrows other contract errors unchanged', async () => {
+      const contractService = {
+        invokeContractMethod: jest.fn().mockRejectedValue(
+          new BadRequestException(
+            'Contract error on TEST.mature_bond (contract error code 4)',
+          ),
+        ),
+      };
+
+      const svc = await buildModule(contractService);
+
+      await expect(svc.mature(7)).rejects.toMatchObject({
+        status: 400,
+        message:
+          'Contract error on TEST.mature_bond (contract error code 4)',
+      });
+    });
+  });
+
+  describe('buildBondResponse', () => {
+    const configScVal = (maturityDate: number) =>
+      xdr.ScVal.scvVec([
+        xdr.ScVal.scvBytes(Buffer.from('a1b2'.padEnd(64, '0'), 'hex')),
+        nativeToScVal(BigInt(1000), { type: 'i128' }),
+        xdr.ScVal.scvVec([nativeToScVal(BigInt(1000000), { type: 'u64' })]),
+        nativeToScVal('Carbon', { type: 'symbol' }),
+        nativeToScVal(BigInt(maturityDate), { type: 'u64' }),
+        nativeToScVal(BigInt(10000), { type: 'i128' }),
+      ]);
+
+    const stateScVal = (status: string) =>
+      xdr.ScVal.scvVec([
+        nativeToScVal(BigInt(5000), { type: 'i128' }),
+        nativeToScVal(status, { type: 'symbol' }),
+        nativeToScVal(BigInt(1767225600), { type: 'u64' }),
+      ]);
+
+    const buildModule = async (maturityDate: number, status: string) => {
+      const contractService = {
+        simulateCall: jest.fn(({ method }) =>
+          method === 'get_bond'
+            ? Promise.resolve(configScVal(maturityDate))
+            : Promise.resolve(stateScVal(status)),
+        ),
+      };
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          BondsService,
+          { provide: ContractService, useValue: contractService },
+          { provide: StellarService, useValue: {} },
+          {
+            provide: NonceService,
+            useValue: { next: jest.fn().mockResolvedValue(0) },
+          },
+        ],
+      }).compile();
+      return moduleRef.get(BondsService);
+    };
+
+    it('reports maturityStatus Active for a bond whose maturity date is in the future', async () => {
+      const svc = await buildModule(253402300799, 'Active');
+      const bond = await (svc as any).buildBondResponse(1);
+
+      expect(bond.maturityDate).toBe(253402300799);
+      expect(bond.maturityStatus).toBe('Active');
+      expect(bond.status).toBe('Active');
+    });
+
+    it('reports maturityStatus Matured once the maturity date has elapsed', async () => {
+      const svc = await buildModule(1000, 'Active');
+      const bond = await (svc as any).buildBondResponse(1);
+
+      expect(bond.maturityStatus).toBe('Matured');
+      expect(bond.status).toBe('Active');
+    });
+
+    it('reports maturityStatus Matured when the bond has been matured on-chain', async () => {
+      const svc = await buildModule(253402300799, 'Matured');
+      const bond = await (svc as any).buildBondResponse(1);
+
+      expect(bond.maturityStatus).toBe('Matured');
+      expect(bond.status).toBe('Matured');
     });
   });
 });

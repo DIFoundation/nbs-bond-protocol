@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, ChangeDetectionStrategy, signal, computed, effect } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy, ChangeDetectionStrategy, signal, computed, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
@@ -25,6 +25,16 @@ import { environment } from '../../../environments/environment';
               <app-status-badge [status]="b.status" variant="bond" />
             </div>
 
+            <div class="maturity-banner" [class.frozen]="maturityReached()">
+              @if (maturityReached()) {
+                <strong>Frozen for trading.</strong>
+                Maturity date ({{ b.maturityDate * 1000 | date:'mediumDate' }}) has been reached.
+                Subscriptions and transfers are disabled.
+              } @else {
+                <strong>Matures in:</strong> {{ countdown() }}
+              }
+            </div>
+
             <div class="detail-body">
               <div class="detail-field">
                 <span class="field-label">Project ID</span>
@@ -40,7 +50,7 @@ import { environment } from '../../../environments/environment';
               </div>
               <div class="detail-field">
                 <span class="field-label">Maturity Date</span>
-                <span class="field-value">{{ b.maturityDate | date }}</span>
+                <span class="field-value">{{ b.maturityDate * 1000 | date }}</span>
               </div>
               <div class="detail-field">
                 <span class="field-label">Total Supply</span>
@@ -77,8 +87,12 @@ import { environment } from '../../../environments/environment';
 
             <div class="subscribe-section">
               <h3 class="section-title">Subscribe</h3>
-              @if (b.status !== 'Active') {
-                <p class="status-notice">This bond is {{ b.status }} and is not accepting new subscriptions.</p>
+              @if (b.status !== 'Active' || maturityReached()) {
+                @if (maturityReached()) {
+                  <p class="status-notice">This bond has reached maturity and is frozen for trading.</p>
+                } @else {
+                  <p class="status-notice">This bond is {{ b.status }} and is not accepting new subscriptions.</p>
+                }
               } @else {
                 <div class="subscribe-form">
                   <label class="form-label" for="amount">Amount</label>
@@ -134,40 +148,44 @@ import { environment } from '../../../environments/environment';
 
             <div class="transfer-section">
               <h3 class="section-title">Transfer Tokens</h3>
-              <div class="subscribe-form">
-                <label class="form-label" for="transferTo">Recipient Address</label>
-                <input
-                  id="transferTo"
-                  type="text"
-                  class="form-input"
-                  [(ngModel)]="transferTo"
-                  placeholder="G... recipient public key"
-                />
-                <label class="form-label" for="transferAmount">Amount</label>
-                <input
-                  id="transferAmount"
-                  type="number"
-                  class="form-input"
-                  [(ngModel)]="transferAmount"
-                  placeholder="Enter amount"
-                  min="1"
-                />
-                <button
-                  class="btn btn-primary transfer-btn"
-                  [disabled]="!transferTo || !transferAmount || transferAmount < 1 || transferSubmitting()"
-                  (click)="onTransfer()"
-                >
-                  {{ transferSubmitting() ? 'Transferring...' : 'Transfer' }}
-                </button>
-                @if (transferSuccess()) {
-                  <div class="success-msg">
-                    Transferred {{ transferAmount }} tokens to {{ transferTo }}! Tx: {{ transferTx() }}
-                  </div>
-                }
-                @if (transferError()) {
-                  <div class="error-msg">{{ transferError() }}</div>
-                }
-              </div>
+              @if (maturityReached()) {
+                <p class="status-notice">Transfers are disabled after the maturity date.</p>
+              } @else {
+                <div class="subscribe-form">
+                  <label class="form-label" for="transferTo">Recipient Address</label>
+                  <input
+                    id="transferTo"
+                    type="text"
+                    class="form-input"
+                    [(ngModel)]="transferTo"
+                    placeholder="G... recipient public key"
+                  />
+                  <label class="form-label" for="transferAmount">Amount</label>
+                  <input
+                    id="transferAmount"
+                    type="number"
+                    class="form-input"
+                    [(ngModel)]="transferAmount"
+                    placeholder="Enter amount"
+                    min="1"
+                  />
+                  <button
+                    class="btn btn-primary transfer-btn"
+                    [disabled]="!transferTo || !transferAmount || transferAmount < 1 || transferSubmitting()"
+                    (click)="onTransfer()"
+                  >
+                    {{ transferSubmitting() ? 'Transferring...' : 'Transfer' }}
+                  </button>
+                  @if (transferSuccess()) {
+                    <div class="success-msg">
+                      Transferred {{ transferAmount }} tokens to {{ transferTo }}! Tx: {{ transferTx() }}
+                    </div>
+                  }
+                  @if (transferError()) {
+                    <div class="error-msg">{{ transferError() }}</div>
+                  }
+                </div>
+              }
             </div>
 
             @if (isAdmin()) {
@@ -223,6 +241,8 @@ import { environment } from '../../../environments/environment';
     .detail-card.sidebar { padding: 24px; }
     .detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     .detail-title { font-size: 1.5rem; font-weight: 700; }
+    .maturity-banner { display: flex; gap: 8px; padding: 12px 16px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; color: #92400e; font-size: 0.875rem; margin-bottom: 24px; }
+    .maturity-banner.frozen { background: #fef2f2; border-color: #fecaca; color: #991b1b; }
     .detail-body { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     .detail-field { display: flex; flex-direction: column; }
     .field-label { font-size: 0.75rem; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
@@ -262,7 +282,7 @@ import { environment } from '../../../environments/environment';
   `],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class BondDetailComponent implements OnInit {
+export class BondDetailComponent implements OnInit, OnDestroy {
   private readonly route = inject(ActivatedRoute);
   private readonly apiService = inject(ApiService);
   private readonly walletService = inject(WalletService);
@@ -270,6 +290,7 @@ export class BondDetailComponent implements OnInit {
   readonly bond = signal<Bond | null>(null);
   readonly loading = signal(true);
   readonly error = signal('');
+  readonly now = signal(Date.now());
   readonly subscribeSubmitting = signal(false);
   readonly subscribeSuccess = signal(false);
   readonly subscribeTx = signal('');
@@ -294,6 +315,19 @@ export class BondDetailComponent implements OnInit {
   readonly isAdmin = computed(
     () => this.walletService.address() === environment.adminAddress,
   );
+
+  readonly maturityReached = computed(() => {
+    const b = this.bond();
+    return !!b && (b.maturityStatus === 'Matured' || b.maturityDate * 1000 <= this.now());
+  });
+
+  readonly countdown = computed(() => {
+    const b = this.bond();
+    if (!b || this.maturityReached()) return '';
+    return this.formatCountdown(b.maturityDate * 1000 - this.now());
+  });
+
+  private maturityTimer?: ReturnType<typeof setInterval>;
 
   private undistributedLoaded = false;
 
@@ -321,6 +355,22 @@ export class BondDetailComponent implements OnInit {
     return Math.round((b.totalSubscribed / b.totalSupply) * 100);
   }
 
+  formatCountdown(ms: number): string {
+    if (ms <= 0) return '';
+    const totalSeconds = Math.floor(ms / 1000);
+    const days = Math.floor(totalSeconds / 86400);
+    const hours = Math.floor((totalSeconds % 86400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    const parts: string[] = [];
+    if (days > 0) parts.push(`${days}d`);
+    if (days > 0 || hours > 0) parts.push(`${hours}h`);
+    if (days > 0 || hours > 0 || minutes > 0) parts.push(`${minutes}m`);
+    parts.push(`${seconds}s`);
+    return parts.join(' ');
+  }
+
   ngOnInit(): void {
     const id = Number(this.route.snapshot.paramMap.get('id'));
     if (!id) {
@@ -328,6 +378,7 @@ export class BondDetailComponent implements OnInit {
       this.loading.set(false);
       return;
     }
+    this.maturityTimer = setInterval(() => this.now.set(Date.now()), 1000);
     this.apiService.getBond(id).subscribe({
       next: (bond) => {
         this.bond.set(bond);
@@ -338,6 +389,12 @@ export class BondDetailComponent implements OnInit {
         this.loading.set(false);
       },
     });
+  }
+
+  ngOnDestroy(): void {
+    if (this.maturityTimer) {
+      clearInterval(this.maturityTimer);
+    }
   }
 
   onSubscribe(): void {

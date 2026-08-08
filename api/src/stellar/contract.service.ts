@@ -60,7 +60,7 @@ export class ContractService {
 
       if (rpc.Api.isSimulationError(simulation)) {
         throw new BadRequestException(
-          `Contract simulation failed: ${simulation.error}`,
+          `Contract simulation failed: ${this.describeSimulationError(simulation.error, simulation.events)}`,
         );
       }
 
@@ -109,7 +109,7 @@ export class ContractService {
 
       if (rpc.Api.isSimulationError(simulation)) {
         throw new BadRequestException(
-          `Transaction simulation failed: ${simulation.error}`,
+          `Transaction simulation failed: ${this.describeSimulationError(simulation.error, simulation.events)}`,
         );
       }
 
@@ -212,11 +212,46 @@ export class ContractService {
     });
   }
 
+  private describeSimulationError(
+    error?: string,
+    events?: xdr.DiagnosticEvent[],
+  ): string {
+    const code = this.extractContractErrorCode(error, events);
+    if (code !== undefined) {
+      return `${error || 'host error'} (contract error code ${code})`;
+    }
+    return error || 'unknown host error';
+  }
+
   private decodeContractError(
     contractAddress: string,
     method: string,
   ): string {
     return `Contract error on ${contractAddress}.${method}`;
+  }
+
+  private extractContractErrorCode(
+    error?: string,
+    events?: xdr.DiagnosticEvent[],
+  ): number | undefined {
+    const match = error?.match(/Error\(Contract, #(\d+)\)/);
+    if (match) {
+      return Number(match[1]);
+    }
+    try {
+      for (const diagnosticEvent of events ?? []) {
+        const data = diagnosticEvent.event().body().v0().data();
+        if (!data || data.switch().name !== 'scvError') {
+          continue;
+        }
+        const scError = data.error();
+        if (scError.switch().name !== 'sceContract') {
+          continue;
+        }
+        return Number(scError.contractCode());
+      }
+    } catch {}
+    return undefined;
   }
 
   getSorobanRpc(): rpc.Server {

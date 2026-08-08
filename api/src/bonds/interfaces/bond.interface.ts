@@ -10,6 +10,11 @@ export enum BondStatusEnum {
   Defaulted = 'Defaulted',
 }
 
+export enum BondMaturityStatusEnum {
+  Active = 'Active',
+  Matured = 'Matured',
+}
+
 export interface BondResponse {
   id: number;
   projectId: string;
@@ -17,6 +22,7 @@ export interface BondResponse {
   couponSchedule: number[];
   creditType: CreditTypeEnum;
   maturityDate: number;
+  maturityStatus: BondMaturityStatusEnum;
   totalSupply: number;
   totalSubscribed: number;
   status: BondStatusEnum;
