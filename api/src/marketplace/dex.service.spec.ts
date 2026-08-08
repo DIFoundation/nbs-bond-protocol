@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { nativeToScVal } from '@stellar/stellar-sdk';
 import { DexService } from './dex.service';
 import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
@@ -7,12 +8,21 @@ import { OrderStatus } from './interfaces/marketplace.interface';
 
 describe('DexService', () => {
   let service: DexService;
+  let contractService: { simulateCall: jest.Mock; invokeContractMethod: jest.Mock };
+
+  const simulateCallMock = jest.fn();
+  const invokeContractMethodMock = jest.fn();
 
   beforeAll(async () => {
+    contractService = {
+      simulateCall: simulateCallMock,
+      invokeContractMethod: invokeContractMethodMock,
+    };
+
     const moduleRef = await Test.createTestingModule({
       providers: [
         DexService,
-        { provide: ContractService, useValue: {} },
+        { provide: ContractService, useValue: contractService },
         { provide: StellarService, useValue: {} },
         {
           provide: NonceService,
@@ -22,6 +32,10 @@ describe('DexService', () => {
     }).compile();
 
     service = moduleRef.get(DexService);
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
   });
 
   describe('decodeOrder', () => {
@@ -72,6 +86,80 @@ describe('DexService', () => {
       ];
 
       expect((service as any).decodeOrder(raw).status).toBe(expected);
+    });
+  });
+
+  describe('getQuoteBalance', () => {
+    const address = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+    it('reads the escrowed balance for the requested asset', async () => {
+      simulateCallMock.mockResolvedValue(nativeToScVal(BigInt(25_000), { type: 'i128' }));
+
+      await expect(service.getQuoteBalance(address, 'USDC')).resolves.toEqual({
+        address,
+        asset: 'USDC',
+        balance: 25000,
+      });
+
+      expect(simulateCallMock).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'get_quote_balance' }),
+      );
+    });
+  });
+
+  describe('depositQuote', () => {
+    const address = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+    it('calls deposit_quote and returns a transaction response', async () => {
+      invokeContractMethodMock.mockResolvedValue({
+        transactionHash: 'abc123',
+        successful: true,
+      });
+
+      await expect(
+        service.depositQuote({ asset: 'USDC', amount: 1000 }, address),
+      ).resolves.toEqual({
+        address,
+        asset: 'USDC',
+        amount: 1000,
+        transactionHash: 'abc123',
+      });
+
+      expect(invokeContractMethodMock).toHaveBeenCalledWith(
+        expect.any(String),
+        'deposit_quote',
+        expect.any(String),
+        expect.any(Array),
+        0,
+      );
+    });
+  });
+
+  describe('withdrawQuote', () => {
+    const address = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+
+    it('calls withdraw_quote and returns a transaction response', async () => {
+      invokeContractMethodMock.mockResolvedValue({
+        transactionHash: 'def456',
+        successful: true,
+      });
+
+      await expect(
+        service.withdrawQuote({ asset: 'XLM', amount: 500 }, address),
+      ).resolves.toEqual({
+        address,
+        asset: 'XLM',
+        amount: 500,
+        transactionHash: 'def456',
+      });
+
+      expect(invokeContractMethodMock).toHaveBeenCalledWith(
+        expect.any(String),
+        'withdraw_quote',
+        expect.any(String),
+        expect.any(Array),
+        0,
+      );
     });
   });
 });

@@ -7,6 +7,8 @@ import {
   Bond, Project, Order, PaginatedResponse,
   SubscriptionResponse, CreateProjectDto, ListBondDto, BuyBondDto,
   ClaimCreditsResponse, TransferResponse,
+  QuoteAsset, QuoteBalanceResponse, QuoteTransactionResponse,
+  DepositQuoteDto, WithdrawQuoteDto,
 } from '../interfaces/bond.interface';
 
 @Injectable({ providedIn: 'root' })
@@ -97,5 +99,20 @@ export class ApiService {
 
   buyBondTokens(data: BuyBondDto): Observable<void> {
     return this.http.post<void>('/api/marketplace/buy', data, { headers: this.headers() });
+  }
+
+  getQuoteBalance(asset: QuoteAsset = 'USDC'): Observable<QuoteBalanceResponse> {
+    return this.http.get<QuoteBalanceResponse>('/api/marketplace/quote-balance', {
+      params: { asset },
+      headers: this.headers(),
+    });
+  }
+
+  depositQuote(data: DepositQuoteDto): Observable<QuoteTransactionResponse> {
+    return this.http.post<QuoteTransactionResponse>('/api/marketplace/deposit', data, { headers: this.headers() });
+  }
+
+  withdrawQuote(data: WithdrawQuoteDto): Observable<QuoteTransactionResponse> {
+    return this.http.post<QuoteTransactionResponse>('/api/marketplace/withdraw', data, { headers: this.headers() });
   }
 }
