@@ -16,6 +16,8 @@ import {
   CouponDistributionResponse,
   ClaimCreditsResponse,
   TransferResponse,
+  UndistributedTotalResponse,
+  SweepUndistributedResponse,
   BondStatusEnum,
   CreditTypeEnum,
 } from './interfaces/bond.interface';
@@ -207,6 +209,39 @@ export class BondsService {
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
       amount: dto.amount,
+      transactionHash: transactionHash || '',
+    };
+  }
+
+  async getUndistributedTotal(id: number): Promise<UndistributedTotalResponse> {
+    const resultScVal = await this.contractService.simulateCall({
+      contractAddress: COUPON_ENGINE(), method: 'get_undistributed_total',
+      args: [nativeToScVal(BigInt(id), { type: 'u64' })],
+    });
+
+    return {
+      bondId: id,
+      undistributedTotal: Number(scValToNative(resultScVal)),
+    };
+  }
+
+  async sweepUndistributed(id: number): Promise<SweepUndistributedResponse> {
+    const adminSecret = this.getAdminSecret();
+    const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
+    const nonce = await this.nonceService.next(COUPON_ENGINE(), adminAddress);
+
+    const { result, transactionHash } = await this.contractService.invokeContractMethod(
+      COUPON_ENGINE(), 'sweep_undistributed', adminSecret,
+      [
+        Address.fromString(adminAddress).toScVal(),
+        nativeToScVal(BigInt(id), { type: 'u64' }),
+      ],
+      nonce,
+    );
+
+    return {
+      bondId: id,
+      swept: Number(scValToNative(result)),
       transactionHash: transactionHash || '',
     };
   }

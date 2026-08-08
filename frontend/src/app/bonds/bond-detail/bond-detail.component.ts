@@ -1,11 +1,13 @@
-import { Component, inject, OnInit, ChangeDetectionStrategy, signal } from '@angular/core';
+import { Component, inject, OnInit, ChangeDetectionStrategy, signal, computed, effect } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { RouterModule, ActivatedRoute } from '@angular/router';
 import { FormsModule } from '@angular/forms';
 import { ApiService } from '../../shared/services/api.service';
+import { WalletService } from '../../auth/wallet.service';
 import { StatusBadgeComponent } from '../../shared/components/status-badge/status-badge.component';
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
 import { Bond } from '../../shared/interfaces/bond.interface';
+import { environment } from '../../../environments/environment';
 
 @Component({
   selector: 'app-bond-detail',
@@ -167,6 +169,40 @@ import { Bond } from '../../shared/interfaces/bond.interface';
                 }
               </div>
             </div>
+
+            @if (isAdmin()) {
+              <div class="admin-section">
+                <h3 class="section-title">Admin: Undistributed Coupons</h3>
+                <p class="admin-note">
+                  Integer-division remainder from coupon distributions, recoverable via sweep.
+                </p>
+                @if (undistributed() !== null) {
+                  <div class="undistributed-total">
+                    <span class="field-label">Undistributed Total</span>
+                    <span class="field-value">{{ undistributed() | number }}</span>
+                  </div>
+                  <button
+                    class="btn btn-primary sweep-btn"
+                    [disabled]="undistributed() === 0 || sweepSubmitting()"
+                    (click)="onSweep()"
+                  >
+                    {{ sweepSubmitting() ? 'Sweeping...' : 'Sweep Undistributed' }}
+                  </button>
+                } @else if (undistributedError()) {
+                  <div class="error-msg">{{ undistributedError() }}</div>
+                } @else {
+                  <div class="admin-note">Loading undistributed total...</div>
+                }
+                @if (sweepSuccess()) {
+                  <div class="success-msg">
+                    Swept {{ sweepSwept() }} credits! Tx: {{ sweepTx() }}
+                  </div>
+                }
+                @if (sweepError()) {
+                  <div class="error-msg">{{ sweepError() }}</div>
+                }
+              </div>
+            }
           </div>
         </div>
       } @else if (loading()) {
@@ -218,14 +254,18 @@ import { Bond } from '../../shared/interfaces/bond.interface';
     .error-msg { font-size: 0.8125rem; color: #ef4444; padding: 8px; background: #fef2f2; border-radius: 6px; }
     .marketplace-link { margin-top: 20px; }
     .claim-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
-    .claim-btn, .transfer-btn { width: 100%; }
+    .claim-btn, .transfer-btn, .sweep-btn { width: 100%; }
     .transfer-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
+    .admin-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; }
+    .admin-note { font-size: 0.8125rem; color: #6b7280; padding: 8px 0; }
+    .undistributed-total { display: flex; flex-direction: column; margin-bottom: 12px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class BondDetailComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly apiService = inject(ApiService);
+  private readonly walletService = inject(WalletService);
 
   readonly bond = signal<Bond | null>(null);
   readonly loading = signal(true);
@@ -243,6 +283,33 @@ export class BondDetailComponent implements OnInit {
   readonly transferSuccess = signal(false);
   readonly transferTx = signal('');
   readonly transferError = signal('');
+  readonly undistributed = signal<number | null>(null);
+  readonly undistributedError = signal('');
+  readonly sweepSubmitting = signal(false);
+  readonly sweepSuccess = signal(false);
+  readonly sweepSwept = signal(0);
+  readonly sweepTx = signal('');
+  readonly sweepError = signal('');
+
+  readonly isAdmin = computed(
+    () => this.walletService.address() === environment.adminAddress,
+  );
+
+  private undistributedLoaded = false;
+
+  private readonly loadUndistributedEffect = effect(() => {
+    const b = this.bond();
+    if (b && this.isAdmin() && !this.undistributedLoaded) {
+      this.undistributedLoaded = true;
+      this.apiService.getUndistributedTotal(b.id).subscribe({
+        next: (res) => this.undistributed.set(res.undistributedTotal),
+        error: (err) =>
+          this.undistributedError.set(
+            err.error?.detail || err.message || 'Failed to load undistributed total',
+          ),
+      });
+    }
+  }, { allowSignalWrites: true });
 
   subscribeAmount = 0;
   transferTo = '';
@@ -335,6 +402,35 @@ export class BondDetailComponent implements OnInit {
       error: (err) => {
         this.transferError.set(err.error?.detail || err.message || 'Transfer failed');
         this.transferSubmitting.set(false);
+      },
+    });
+  }
+
+  onSweep(): void {
+    const b = this.bond();
+    const total = this.undistributed();
+    if (!b || total === null || total <= 0) return;
+
+    const confirmed = window.confirm(
+      `Sweep ${total} undistributed credits from Bond #${b.id}? This will reset the undistributed balance to zero.`,
+    );
+    if (!confirmed) return;
+
+    this.sweepSubmitting.set(true);
+    this.sweepSuccess.set(false);
+    this.sweepError.set('');
+
+    this.apiService.sweepUndistributed(b.id).subscribe({
+      next: (res) => {
+        this.sweepSuccess.set(true);
+        this.sweepSwept.set(res.swept);
+        this.sweepTx.set(res.transactionHash);
+        this.sweepSubmitting.set(false);
+        this.undistributed.set(0);
+      },
+      error: (err) => {
+        this.sweepError.set(err.error?.detail || err.message || 'Sweep failed');
+        this.sweepSubmitting.set(false);
       },
     });
   }

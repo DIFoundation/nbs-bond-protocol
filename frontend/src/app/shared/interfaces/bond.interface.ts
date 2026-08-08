@@ -62,6 +62,17 @@ export interface TransferResponse {
   transactionHash: string;
 }
 
+export interface UndistributedTotalResponse {
+  bondId: number;
+  undistributedTotal: number;
+}
+
+export interface SweepUndistributedResponse {
+  bondId: number;
+  swept: number;
+  transactionHash: string;
+}
+
 export interface CreateProjectDto {
   name: string;
   methodology: string;
