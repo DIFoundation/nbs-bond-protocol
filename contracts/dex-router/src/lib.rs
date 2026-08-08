@@ -13,6 +13,7 @@ pub enum DataKey {
     BondOrders(u64),
     BondIssuerAddress,
     CouponEngineAddress,
+    Balance(Symbol, Address),
     Nonce(Address),
 }
 
@@ -63,6 +64,19 @@ fn set_nonce(env: &Env, addr: &Address, nonce: u64) {
     env.storage()
         .persistent()
         .set(&DataKey::Nonce(addr.clone()), &nonce);
+}
+
+fn get_balance(env: &Env, addr: &Address, asset: &Symbol) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Balance(asset.clone(), addr.clone()))
+        .unwrap_or(0)
+}
+
+fn set_balance(env: &Env, addr: &Address, asset: &Symbol, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Balance(asset.clone(), addr.clone()), &amount);
 }
 
 fn is_order_expired(env: &Env, order: &Order) -> bool {
@@ -140,6 +154,9 @@ impl DEXRouter {
         if amount <= 0 || price_per_token <= 0 {
             return Err(DEXError::ZeroAmount);
         }
+        if expires_after_seconds == 0 {
+            return Err(DEXError::OrderExpired);
+        }
 
         verify_holder_balance(&env, &seller, bond_id, amount)?;
 
@@ -154,6 +171,9 @@ impl DEXRouter {
             .set(&DataKey::OrderCount, &order_id);
 
         let now = env.ledger().timestamp();
+        let expires_at = now
+            .checked_add(expires_after_seconds)
+            .ok_or(DEXError::OrderExpired)?;
         let order = Order {
             id: order_id,
             seller: seller.clone(),
@@ -163,7 +183,7 @@ impl DEXRouter {
             quote_asset,
             status: OrderStatus::Open,
             created_at: now,
-            expires_at: now + expires_after_seconds,
+            expires_at,
         };
 
         env.storage()
@@ -289,6 +309,22 @@ impl DEXRouter {
             return Err(DEXError::InsufficientBalance);
         }
 
+        let proceeds = amount
+            .checked_mul(order.price_per_token)
+            .ok_or(DEXError::Overflow)?;
+
+        let buyer_balance = get_balance(&env, &buyer, &order.quote_asset);
+        if buyer_balance < proceeds {
+            return Err(DEXError::InsufficientFunds);
+        }
+        set_balance(&env, &buyer, &order.quote_asset, buyer_balance - proceeds);
+
+        let seller_balance = get_balance(&env, &order.seller, &order.quote_asset);
+        let new_seller_balance = seller_balance
+            .checked_add(proceeds)
+            .ok_or(DEXError::Overflow)?;
+        set_balance(&env, &order.seller, &order.quote_asset, new_seller_balance);
+
         let bond_issuer: Address = env
             .storage()
             .instance()
@@ -326,10 +362,79 @@ impl DEXRouter {
                 order.seller.clone(),
                 amount,
                 order.price_per_token,
+                proceeds,
             ),
         );
 
         Ok(())
+    }
+
+    pub fn deposit_quote(
+        env: Env,
+        caller: Address,
+        quote_asset: Symbol,
+        amount: i128,
+        nonce: u64,
+    ) -> Result<(), DEXError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        if amount <= 0 {
+            return Err(DEXError::ZeroAmount);
+        }
+
+        let balance = get_balance(&env, &caller, &quote_asset);
+        let new_balance = balance.checked_add(amount).ok_or(DEXError::Overflow)?;
+        set_balance(&env, &caller, &quote_asset, new_balance);
+
+        env.events().publish(
+            (Symbol::new(&env, "quote_deposited"),),
+            (caller, quote_asset, amount),
+        );
+
+        Ok(())
+    }
+
+    pub fn withdraw_quote(
+        env: Env,
+        caller: Address,
+        quote_asset: Symbol,
+        amount: i128,
+        nonce: u64,
+    ) -> Result<(), DEXError> {
+        caller.require_auth();
+
+        let expected_nonce = get_nonce(&env, &caller);
+        if nonce != expected_nonce {
+            return Err(DEXError::InvalidNonce);
+        }
+        set_nonce(&env, &caller, expected_nonce + 1);
+
+        if amount <= 0 {
+            return Err(DEXError::ZeroAmount);
+        }
+
+        let balance = get_balance(&env, &caller, &quote_asset);
+        if balance < amount {
+            return Err(DEXError::InsufficientFunds);
+        }
+        set_balance(&env, &caller, &quote_asset, balance - amount);
+
+        env.events().publish(
+            (Symbol::new(&env, "quote_withdrawn"),),
+            (caller, quote_asset, amount),
+        );
+
+        Ok(())
+    }
+
+    pub fn get_quote_balance(env: Env, address: Address, quote_asset: Symbol) -> i128 {
+        get_balance(&env, &address, &quote_asset)
     }
 
     pub fn get_order(env: Env, order_id: u64) -> Result<Order, DEXError> {
@@ -520,7 +625,9 @@ mod test {
             &0,
         );
 
-        client.execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &0);
+        client.deposit_quote(&buyer, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+        client.execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &1);
 
         let order = client.get_order(&order_id);
         assert_eq!(order.status, OrderStatus::Filled);
@@ -529,6 +636,12 @@ mod test {
             nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_000);
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 1_000);
+
+        assert_eq!(client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")), 0);
+        assert_eq!(
+            client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")),
+            100_000
+        );
     }
 
     #[test]
@@ -557,7 +670,9 @@ mod test {
             &0,
         );
 
-        client.execute_purchase(&buyer, &order_id, &100i128, &400i128, &0);
+        client.deposit_quote(&buyer, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+        client.execute_purchase(&buyer, &order_id, &100i128, &400i128, &1);
 
         let order = client.get_order(&order_id);
         assert_eq!(order.status, OrderStatus::PartiallyFilled);
@@ -568,13 +683,28 @@ mod test {
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_600);
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 400);
 
-        client.execute_purchase(&buyer, &order_id, &100i128, &600i128, &1);
+        assert_eq!(
+            client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
+            60_000
+        );
+        assert_eq!(
+            client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")),
+            40_000
+        );
+
+        client.execute_purchase(&buyer, &order_id, &100i128, &600i128, &2);
 
         let order = client.get_order(&order_id);
         assert_eq!(order.status, OrderStatus::Filled);
 
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 4_000);
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 1_000);
+
+        assert_eq!(client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")), 0);
+        assert_eq!(
+            client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")),
+            100_000
+        );
     }
 
     #[test]
@@ -609,7 +739,9 @@ mod test {
 
         issuer_client.transfer(&seller, &third_party, &bond_id, &1_000);
 
-        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &0);
+        client.deposit_quote(&buyer, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &1);
         assert!(result.is_err());
 
         let order = client.get_order(&order_id);
@@ -617,6 +749,11 @@ mod test {
         assert_eq!(order.amount, 1_000);
 
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 0);
+        assert_eq!(
+            client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
+            100_000
+        );
+        assert_eq!(client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")), 0);
     }
 
     #[test]
@@ -653,6 +790,84 @@ mod test {
 
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &seller), 5_000);
         assert_eq!(issuer_client.get_holder_balance(&bond_id, &buyer), 0);
+    }
+
+    #[test]
+    fn test_buy_requires_escrow_funds() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let buyer = Address::generate(&env);
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, 10_000, 5_000);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id, Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        let order_id = client.list_bond_tokens(
+            &seller,
+            &bond_id,
+            &1_000i128,
+            &100i128,
+            &Symbol::new(&env, "USDC"),
+            &3600u64,
+            &0,
+        );
+
+        client.deposit_quote(&buyer, &Symbol::new(&env, "USDC"), &50_000i128, &0);
+
+        let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &1_000i128, &1);
+        assert_eq!(result, Err(Ok(DEXError::InsufficientFunds)));
+
+        let order = client.get_order(&order_id);
+        assert_eq!(order.status, OrderStatus::Open);
+        assert_eq!(order.amount, 1_000);
+
+        assert_eq!(
+            client.get_quote_balance(&buyer, &Symbol::new(&env, "USDC")),
+            50_000
+        );
+        assert_eq!(client.get_quote_balance(&seller, &Symbol::new(&env, "USDC")), 0);
+    }
+
+    #[test]
+    fn test_deposit_and_withdraw_quote() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), Address::generate(&env), Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        client.deposit_quote(&user, &Symbol::new(&env, "USDC"), &10_000i128, &0);
+        client.deposit_quote(&user, &Symbol::new(&env, "XLM"), &5_000i128, &1);
+
+        assert_eq!(
+            client.get_quote_balance(&user, &Symbol::new(&env, "USDC")),
+            10_000
+        );
+        assert_eq!(
+            client.get_quote_balance(&user, &Symbol::new(&env, "XLM")),
+            5_000
+        );
+
+        let result = client.try_withdraw_quote(&user, &Symbol::new(&env, "USDC"), &11_000i128, &2);
+        assert_eq!(result, Err(Ok(DEXError::InsufficientFunds)));
+
+        client.withdraw_quote(&user, &Symbol::new(&env, "USDC"), &4_000i128, &2);
+        assert_eq!(
+            client.get_quote_balance(&user, &Symbol::new(&env, "USDC")),
+            6_000
+        );
     }
 
     #[test]

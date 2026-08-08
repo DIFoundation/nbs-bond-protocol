@@ -465,7 +465,11 @@ mod integration {
 
             contracts
                 .dr_client
-                .execute_purchase(&bob, &order_id, &100i128, &1_000i128, &0);
+                .deposit_quote(&bob, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+            contracts
+                .dr_client
+                .execute_purchase(&bob, &order_id, &100i128, &1_000i128, &1);
 
             let order = contracts.dr_client.get_order(&order_id);
             assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
@@ -508,7 +512,11 @@ mod integration {
 
             contracts
                 .dr_client
-                .execute_purchase(&bob, &order_id, &100i128, &400i128, &0);
+                .deposit_quote(&bob, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+            contracts
+                .dr_client
+                .execute_purchase(&bob, &order_id, &100i128, &400i128, &1);
 
             let order = contracts.dr_client.get_order(&order_id);
             assert_eq!(order.status, nbbs_dex_router::OrderStatus::PartiallyFilled);
@@ -516,7 +524,7 @@ mod integration {
 
             contracts
                 .dr_client
-                .execute_purchase(&bob, &order_id, &100i128, &600i128, &1);
+                .execute_purchase(&bob, &order_id, &100i128, &600i128, &2);
 
             let order = contracts.dr_client.get_order(&order_id);
             assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
@@ -559,7 +567,11 @@ mod integration {
 
             contracts
                 .dr_client
-                .execute_purchase(&bob, &order_id, &100i128, &1_000i128, &0);
+                .deposit_quote(&bob, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+            contracts
+                .dr_client
+                .execute_purchase(&bob, &order_id, &100i128, &1_000i128, &1);
 
             let order = contracts.dr_client.get_order(&order_id);
             assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
@@ -569,6 +581,20 @@ mod integration {
             let bob_balance = contracts.bi_client.get_holder_balance(&bond_id, &bob);
             assert_eq!(alice_balance, 4_000);
             assert_eq!(bob_balance, 1_000);
+
+            assert_eq!(
+                contracts.dr_client.get_quote_balance(
+                    &alice,
+                    &Symbol::new(&env, "USDC")
+                ),
+                100_000
+            );
+            assert_eq!(
+                contracts
+                    .dr_client
+                    .get_quote_balance(&bob, &Symbol::new(&env, "USDC")),
+                0
+            );
         }
     }
 

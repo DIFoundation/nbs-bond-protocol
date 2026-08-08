@@ -43,6 +43,8 @@ pub enum DEXError {
     SelfBuyNotAllowed = 7,
     OrderExpired = 8,
     ZeroAmount = 9,
+    InsufficientFunds = 10,
+    Overflow = 11,
 }
 
 #[derive(Clone, Debug, PartialEq)]
