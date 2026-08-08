@@ -504,6 +504,70 @@ Where `credit_conversion_factor` is set at bond issuance and reflects the method
 
 ---
 
+## 🌐 Oracle Adapters
+
+The standalone adapters in `oracle/` poll real upstream endpoints, validate every response against a documented schema, and produce IPFS-anchored measurement reports whose fields mirror the on-chain `Report` struct (`period_start`, `period_end`, `carbon_sequestered`, `methodology`, `ipfs_evidence_hash`).
+
+### Adapters
+
+| Adapter | File | Upstream | Methodology | Input schema (`oracle/schemas.ts`) |
+|---|---|---|---|---|
+| Verra registry | `oracle/verra-adapter.ts` | `VERRA_REGISTRY_URL` (Verra-compatible VCS registry) | `VERRA-VCS` | `VerraProjectSchema`, `VerraMonitoringReportSchema` |
+| Satellite | `oracle/satellite-processor.ts` | `SATELLITE_API_URL` (Sentinel-2 / Landsat NDVI stats) | `REMOTE-SENSING` | `SatelliteSceneSchema`, `SatelliteProjectConfigSchema` |
+| IoT | `oracle/iot-aggregator.ts` | `IOT_API_URL` (in-situ soil sensors) | `IOT-SENSORS` | `IoTSensorReadingSchema`, `IotProjectConfigSchema` |
+
+All three validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned.
+
+### Report format
+
+```json
+{
+  "project_id": "VCS-1234",
+  "provider": "VerraRegistry",
+  "methodology": "VERRA-VCS",
+  "period_start": "2025-01-01",
+  "period_end": "2025-03-31",
+  "carbon_sequestered": 50000,
+  "confidence": 0.95,
+  "ipfs_evidence_hash": "QmTttqvnJq63tghnv38Uwkd7DWs9NZqfidavoZTisGKX3U",
+  "evidence": { "verra_report_ids": ["MR-2024-0112"], "credits_issued": 50 }
+}
+```
+
+`ipfs_evidence_hash` is a content-addressed IPFS CIDv0: the canonical (key-sorted) JSON of the report is SHA-256 hashed and base58btc-encoded by `ipfs/evidence.ts`, so the hash is deterministic, tamper-evident, and can be pinned to IPFS/Pinata via `uploadEvidence` (requires `IPFS_API_KEY`/`IPFS_SECRET_KEY`). When no pinning credentials are configured, adapters still produce the hash offline — perfect for local development and tests.
+
+### Running each adapter against test data
+
+No network is required. The `oracle/` package ships fixtures in `oracle/testdata/` and a file-backed `HttpClient` (`oracle/run.ts`) that serves them in place of the live endpoints:
+
+```bash
+cd oracle
+npm install
+
+npm run ingest:verra       # poll Verra registry fixture → OracleReport
+npm run ingest:satellite   # ingest NDVI scenes fixture → OracleReport
+npm run ingest:iot         # aggregate sensor readings fixture → OracleReport
+npm run ingest             # run all three adapters
+```
+
+Unit tests mock the upstream HTTP surface (`oracle/test-helpers.ts`) and cover success and error paths (schema violations, 404/500 responses, empty periods, missing credentials):
+
+```bash
+cd oracle
+npm test                   # jest
+npm run typecheck          # tsc --noEmit
+```
+
+To point an adapter at a live registry instead, set the matching environment variable (`VERRA_REGISTRY_URL`, `SATELLITE_API_URL`, `IOT_API_URL`) and call the exported ingest function, e.g. `pollVerraProject('VCS-1234', { periodStart: '2025-01-01', periodEnd: '2025-03-31' })`.
+
+### Measurement models
+
+- **Verra** — sums `carbon_sequestered_kg` across reports whose `verification_status === 'VERIFIED'` and whose reporting period falls inside the requested window.
+- **Satellite** — averages NDVI over scenes with cloud cover ≤ 20%, converts the change from `baseline_ndvi` into kg CO2e using a simplified IPCC Tier 1 factor (`area_ha × ndvi_change × 3.67 tC/ha × 44/12`). The factor is a methodology placeholder and must be tuned per project.
+- **IoT** — validates each reading, aggregates soil moisture/temperature/humidity/water table, and estimates sequestration from the per-device mean change in soil organic carbon (ppm) over the period: `Δppm × area_ha × 15.4 kg CO2e·ha⁻¹·ppm⁻¹` (assumes 1.4 t/m³ bulk density, 0.3 m sampling depth). Devices without a start/end reading contribute no delta.
+
+---
+
 ## 🌱 Credit Types Supported
 
 ### Carbon Credits (tCO₂e)
@@ -759,11 +823,17 @@ nbs-bond-protocol/
 │   └── package.json
 │
 ├── oracle/                             # Oracle adapter scripts
-│   ├── verra-adapter.ts
-│   ├── satellite-processor.ts
-│   └── iot-aggregator.ts
+│   ├── verra-adapter.ts                #   Verra-compatible registry poller
+│   ├── satellite-processor.ts          #   Sentinel-2/Landsat NDVI ingestion
+│   ├── iot-aggregator.ts               #   In-situ soil sensor aggregation
+│   ├── schemas.ts                      #   Zod input/output schemas
+│   ├── report.ts                       #   Report builder + evidence hashing
+│   ├── run.ts                          #   Run adapters against testdata fixtures
+│   ├── http.ts                         #   Swappable HTTP surface for adapters
+│   └── testdata/                       #   Mock upstream fixtures + specs
 │
 ├── ipfs/                               # IPFS upload utilities & schemas
+│   ├── evidence.ts                     #   CIDv0 evidence hashing + pinning
 │   ├── schemas/
 │   │   ├── project-prospectus.schema.json
 │   │   └── oracle-report.schema.json
