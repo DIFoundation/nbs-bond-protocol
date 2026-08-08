@@ -7,12 +7,13 @@ import { AuthService } from '../../auth/auth.service';
 import { WalletService } from '../../auth/wallet.service';
 import { StatusBadgeComponent } from '../../shared/components/status-badge/status-badge.component';
 import { LoadingSpinnerComponent } from '../../shared/components/loading-spinner/loading-spinner.component';
-import { Order, Bond } from '../../shared/interfaces/bond.interface';
+import { QuoteBalanceComponent, QuoteBalances } from '../../shared/components/quote-balance/quote-balance.component';
+import { Order, Bond, QuoteAsset } from '../../shared/interfaces/bond.interface';
 
 @Component({
   selector: 'app-marketplace-list',
   standalone: true,
-  imports: [CommonModule, RouterModule, FormsModule, StatusBadgeComponent, LoadingSpinnerComponent],
+  imports: [CommonModule, RouterModule, FormsModule, StatusBadgeComponent, LoadingSpinnerComponent, QuoteBalanceComponent],
   template: `
     <div class="marketplace-page">
       <div class="page-header">
@@ -24,6 +25,12 @@ import { Order, Bond } from '../../shared/interfaces/bond.interface';
 
       @if (error()) {
         <div class="error-banner">{{ error() }}</div>
+      }
+
+      @if (walletService.isConnected()) {
+        <div class="quote-section">
+          <app-quote-balance #quotePanel (balanceChange)="onBalancesChange($event)" />
+        </div>
       }
 
       <div class="filters">
@@ -93,23 +100,39 @@ import { Order, Bond } from '../../shared/interfaces/bond.interface';
                       <td><app-status-badge [status]="order.status" variant="bond" /></td>
                       <td>{{ order.createdAt | date }}</td>
                       <td>
-                        @if (order.status === 'Open' || order.status === 'PartiallyFilled') {
-                          @if (buyOrderId() === order.id) {
-                            <div class="buy-form">
-                              <input type="number" class="buy-input" placeholder="Amount" [(ngModel)]="buyAmount" min="1" />
-                              <input type="number" class="buy-input" placeholder="Max price" [(ngModel)]="buyMaxPrice" min="0.01" />
-                              <div class="buy-actions">
-                                <button class="btn btn-sm btn-primary" (click)="onBuy(order)" [disabled]="buySubmitting()">Confirm</button>
-                                <button class="btn btn-sm btn-outline" (click)="cancelBuy()">Cancel</button>
+                          @if (order.status === 'Open' || order.status === 'PartiallyFilled') {
+                            @if (buyOrderId() === order.id) {
+                              <div class="buy-form">
+                                <input type="number" class="buy-input" placeholder="Amount" [(ngModel)]="buyAmount" min="1" />
+                                <input type="number" class="buy-input" placeholder="Max price" [(ngModel)]="buyMaxPrice" min="0.01" />
+                                @if (buyRequirement(order); as req) {
+                                  <div class="buy-requirement">
+                                    @if (req.sufficient) {
+                                      <span class="sufficient-msg">
+                                        Escrow sufficient: {{ req.required }} {{ order.quoteAsset }} needed, {{ req.available }} available.
+                                      </span>
+                                    } @else {
+                                      <span class="insufficient-msg">
+                                        Insufficient escrow: need {{ req.required }} {{ order.quoteAsset }}, have {{ req.available }}.
+                                      </span>
+                                      <button class="btn btn-sm btn-outline" (click)="focusQuotePanel()">
+                                        Deposit {{ req.shortfall }} {{ order.quoteAsset }} to buy
+                                      </button>
+                                    }
+                                  </div>
+                                }
+                                <div class="buy-actions">
+                                  <button class="btn btn-sm btn-primary" (click)="onBuy(order)" [disabled]="buySubmitting() || !canConfirm(order)">Confirm</button>
+                                  <button class="btn btn-sm btn-outline" (click)="cancelBuy()">Cancel</button>
+                                </div>
+                                @if (buyError()) {
+                                  <div class="error-msg">{{ buyError() }}</div>
+                                }
                               </div>
-                              @if (buyError()) {
-                                <div class="error-msg">{{ buyError() }}</div>
-                              }
-                            </div>
-                          } @else {
-                            <button class="btn btn-sm btn-primary" (click)="openBuy(order)">Buy</button>
+                            } @else {
+                              <button class="btn btn-sm btn-primary" (click)="openBuy(order)">Buy</button>
+                            }
                           }
-                        }
                       </td>
                     </tr>
                   }
@@ -160,6 +183,7 @@ import { Order, Bond } from '../../shared/interfaces/bond.interface';
     .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
     .page-title { font-size: 1.5rem; font-weight: 700; }
     .error-banner { background: #fef2f2; color: #ef4444; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 0.875rem; }
+    .quote-section { margin-bottom: 24px; }
     .filters { margin-bottom: 20px; }
     .filter-label { font-size: 0.8125rem; font-weight: 600; color: #1a1a2e; display: flex; align-items: center; gap: 8px; }
     .filter-select { padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem; outline: none; background: #fff; }
@@ -189,10 +213,13 @@ import { Order, Bond } from '../../shared/interfaces/bond.interface';
     .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-outline { background: #fff; color: #1a1a2e; border: 1px solid #d1d5db; }
     .btn-outline:hover { background: #f0f2f5; }
-    .buy-form { display: flex; flex-direction: column; gap: 6px; min-width: 160px; }
+    .buy-form { display: flex; flex-direction: column; gap: 6px; min-width: 180px; }
     .buy-input { padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.8125rem; outline: none; width: 100%; }
     .buy-input:focus { border-color: #3b82f6; }
     .buy-actions { display: flex; gap: 4px; }
+    .buy-requirement { display: flex; flex-direction: column; gap: 6px; font-size: 0.75rem; padding: 8px; border-radius: 6px; }
+    .sufficient-msg { color: #22c55e; }
+    .insufficient-msg { color: #ef4444; }
     .error-msg { font-size: 0.75rem; color: #ef4444; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -215,6 +242,10 @@ export class MarketplaceListComponent implements OnInit {
   readonly buyError = signal('');
   buyAmount = 0;
   buyMaxPrice = 0;
+
+  readonly balances = signal<QuoteBalances>({ USDC: 0, XLM: 0 });
+  readonly balancesLoaded = signal(false);
+  quotePanel?: QuoteBalanceComponent;
 
   readonly bestPrices = computed(() => {
     const orders = this.orders();
@@ -293,10 +324,47 @@ export class MarketplaceListComponent implements OnInit {
     this.buyAmount = 0;
     this.buyMaxPrice = 0;
     this.buyError.set('');
+    this.quotePanel?.loadBalances();
   }
 
   cancelBuy(): void {
     this.buyOrderId.set(null);
+  }
+
+  onBalancesChange(balances: QuoteBalances): void {
+    this.balances.set(balances);
+    this.balancesLoaded.set(true);
+  }
+
+  buyRequirement(order: Order): {
+    required: number;
+    available: number;
+    shortfall: number;
+    asset: QuoteAsset;
+    sufficient: boolean;
+  } | null {
+    if (this.buyOrderId() !== order.id || !this.balancesLoaded()) return null;
+    if (!this.buyAmount || this.buyAmount < 1 || !this.buyMaxPrice || this.buyMaxPrice <= 0) return null;
+
+    const asset = order.quoteAsset;
+    const required = this.buyAmount * order.pricePerToken;
+    const available = this.balances()[asset] ?? 0;
+    return {
+      required,
+      available,
+      shortfall: Math.max(0, required - available),
+      asset,
+      sufficient: available >= required,
+    };
+  }
+
+  canConfirm(order: Order): boolean {
+    if (!this.balancesLoaded()) return true;
+    return this.buyRequirement(order)?.sufficient ?? false;
+  }
+
+  focusQuotePanel(): void {
+    document.getElementById('quote-balance')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
   onBuy(order: Order): void {
@@ -312,6 +380,7 @@ export class MarketplaceListComponent implements OnInit {
       next: () => {
         this.buyOrderId.set(null);
         this.buySubmitting.set(false);
+        this.quotePanel?.loadBalances();
         this.loadOrders();
       },
       error: (err) => {

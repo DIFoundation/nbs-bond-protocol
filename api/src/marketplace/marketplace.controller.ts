@@ -6,10 +6,15 @@ import { DexService } from './dex.service';
 import { LiquidityService } from './liquidity.service';
 import { ListBondDto } from './dto/list-bond.dto';
 import { BuyBondDto } from './dto/buy-bond.dto';
+import { DepositQuoteDto } from './dto/deposit-quote.dto';
+import { WithdrawQuoteDto } from './dto/withdraw-quote.dto';
+import { QuoteBalanceQueryDto } from './dto/quote-balance-query.dto';
 import {
   OrderResponse,
   PriceFeedResponse,
   PriceLevel,
+  QuoteBalanceResponse,
+  QuoteTransactionResponse,
   SlippageResponse,
 } from './interfaces/marketplace.interface';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
@@ -54,6 +59,35 @@ export class MarketplaceController {
   ): Promise<OrderResponse> {
     const buyerAddress = req.headers['x-wallet-address'] as string || '';
     return this.dexService.buyBondTokens(dto, buyerAddress);
+  }
+
+  @Get('quote-balance')
+  async getQuoteBalance(
+    @Query() query: QuoteBalanceQueryDto,
+    @Req() req: any,
+  ): Promise<QuoteBalanceResponse> {
+    const address = req.headers['x-wallet-address'] as string || '';
+    return this.dexService.getQuoteBalance(address, query.asset ?? 'USDC');
+  }
+
+  @Post('deposit')
+  @HttpCode(HttpStatus.OK)
+  async depositQuote(
+    @Body() dto: DepositQuoteDto,
+    @Req() req: any,
+  ): Promise<QuoteTransactionResponse> {
+    const address = req.headers['x-wallet-address'] as string || '';
+    return this.dexService.depositQuote(dto, address);
+  }
+
+  @Post('withdraw')
+  @HttpCode(HttpStatus.OK)
+  async withdrawQuote(
+    @Body() dto: WithdrawQuoteDto,
+    @Req() req: any,
+  ): Promise<QuoteTransactionResponse> {
+    const address = req.headers['x-wallet-address'] as string || '';
+    return this.dexService.withdrawQuote(dto, address);
   }
 
   @Delete('orders/:id')
