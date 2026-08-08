@@ -341,6 +341,8 @@ pub fn subscribe(
 ) -> Result<(), BondError> { ... }
 ```
 
+Maturity is **time-based**: `mature_bond` is rejected before the bond's `maturity_date` is reached, and once that date elapses `subscribe` and `transfer` are also rejected so the outstanding supply is frozen on schedule. Redemption still requires the explicit `Matured` state.
+
 ---
 
 ### `CouponEngine`
@@ -361,13 +363,19 @@ pub struct OracleReport {
     pub ipfs_evidence_hash: BytesN<32>,
 }
 
-// Distribute coupon for a given period
+// Distribute coupon for a given period (report referenced by on-chain report_id)
 pub fn distribute_coupon(
     env: Env,
+    caller: Address,
     bond_id: BondId,
     period: u32,
-    report: OracleReport,
+    holders: Vec<Address>,
+    report_id: ReportId,     // must reference a Verified oracle report
+    nonce: u64,
 ) -> CouponResult { ... }
+
+// Admin sweeps integer-division remainder that holders could not be allocated
+pub fn sweep_undistributed(env: Env, caller: Address, bond_id: BondId, nonce: u64) -> i128 { ... }
 
 // Query accrued credits for a bondholder
 pub fn accrued_credits(
@@ -391,6 +399,10 @@ pub fn register_provider(
     provider: Address,
     methodology: Symbol,
 ) -> Result<(), OracleError> { ... }
+
+// Commit / withdraw provider staking collateral
+pub fn add_stake(env: Env, provider: Address, amount: i128, nonce: u64) -> Result<(), OracleError> { ... }
+pub fn withdraw_stake(env: Env, provider: Address, amount: i128, nonce: u64) -> Result<(), OracleError> { ... }
 
 // Submit a signed measurement report
 pub fn submit_report(
@@ -416,6 +428,11 @@ pub fn challenge_report(
 Manages bond token and coupon credit listings, order routing, and settlement on the Stellar DEX. The router abstracts Stellar's native DEX primitives and provides a unified interface for the NbS Bond marketplace.
 
 ```rust
+// Escrow quote assets before trading
+pub fn deposit_quote(env, caller, symbol, amount) -> Result<(), DEXError>
+pub fn withdraw_quote(env, caller, symbol, amount) -> Result<(), DEXError>
+pub fn get_quote_balance(env, address, symbol) -> i128
+
 // List bond tokens for sale on Stellar DEX
 pub fn list_bond_tokens(
     env: Env,
@@ -426,14 +443,18 @@ pub fn list_bond_tokens(
     nonce: u64,
 ) -> Result<OrderId, DEXError> { ... }
 
-// Execute a purchase via Stellar path payment
+// Execute a purchase funded from escrowed quote balance
 pub fn execute_purchase(
     env: Env,
     buyer: Address,
     order_id: OrderId,
+    amount: i128,
     max_price: i128,
+    nonce: u64,
 ) -> Result<(), DEXError> { ... }
 ```
+
+Purchases are funded from the buyer's escrowed quote balance (`deposit_quote`); a fill atomically transfers both bond tokens and the escrowed quote so a purchase either fully settles or fully reverts.
 
 ---
 
@@ -468,7 +489,7 @@ The integrity of this protocol depends entirely on the quality and trustworthine
 2. **Multi-signature Validation** — High-value reports (backing bonds >$1M) require 2-of-3 provider signatures
 3. **Challenge Window** — Any stakeholder may challenge a submitted report within 72 hours by submitting counter-evidence (IPFS hash)
 4. **Dispute Resolution** — Challenged reports are frozen pending review by the protocol's dispute committee; coupons are held in escrow during disputes
-5. **Slashing** — Providers submitting fraudulent reports lose their whitelist status and any staked collateral
+5. **Staking & Slashing** — Providers commit staked collateral via `add_stake`; a challenge resolved to `Rejected` slashes **10%** of that stake, and a provider whose stake reaches zero is deactivated and loses whitelist status. Exonerated providers (`Verified` verdict) are not penalized.
 
 ### Performance Calculation
 
@@ -551,7 +572,7 @@ Bond tokens and credit coupon tokens are standard **Stellar Assets**, making the
 
 ### Oracle Security
 
-- Provider whitelist with staked collateral
+- Provider whitelist with staked collateral (`add_stake` / `withdraw_stake`, 10% slash on rejected challenges)
 - 72-hour challenge window on all submitted reports
 - Multi-sig required for high-value bond reports
 - Dispute resolution committee with on-chain escalation path

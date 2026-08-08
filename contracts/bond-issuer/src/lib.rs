@@ -150,12 +150,6 @@ impl BondIssuer {
             .get(&DataKey::BondConfig(bond_id))
             .ok_or(BondError::BondNotFound)?;
 
-        let config: BondConfig = env
-            .storage()
-            .instance()
-            .get(&DataKey::BondConfig(bond_id))
-            .ok_or(BondError::BondNotFound)?;
-
         let mut state: BondState = env
             .storage()
             .instance()

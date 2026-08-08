@@ -673,7 +673,7 @@ fn slash_provider(env: &Env, provider: &Address) {
         .set(&DataKey::Provider(provider.clone()), &p);
 
     env.events().publish(
-        (Symbol::new(&env, "provider_slashed"),),
+        (Symbol::new(env, "provider_slashed"),),
         (provider.clone(), penalty, p.stake, p.active),
     );
 }

@@ -34,11 +34,21 @@ The admin can verify a report and it counts toward the threshold, but the submit
 ## Challenge Mechanism
 - 72-hour window from submission
 - Any address can challenge with counter-evidence (IPFS hash)
-- Admin resolves via on-chain vote
+- Admin resolves via on-chain vote (`resolve_challenge`), settling the report to `Rejected` or `Verified`
+
+## Staking & Slashing
+Providers stake collateral that is at risk if their reports are overturned:
+
+- `add_stake(amount)` / `withdraw_stake(amount)` let an active provider top up or partially withdraw its own stake; withdrawals can never drop the stake below zero (`InsufficientStake`).
+- On a challenge resolution to `Rejected`, the provider is slashed **10%** of its stake (`SLASH_PENALTY_PPM = 100_000`), transferred out of the provider's committed collateral.
+- If the remaining stake reaches zero the provider is **deactivated** (`active = false`) and can no longer submit or verify reports.
+- Resolving a challenge to `Verified` imposes **no** penalty — the challenger is wrong and the provider is exonerated.
+- Every slash emits a `provider_slashed` event carrying the provider, penalty amount, remaining stake, and active flag.
 
 ## Security Model
 - Provider whitelist (admin-managed)
+- Provider staking: committed collateral underwrites report quality; `add_stake` / `withdraw_stake` manage exposure
+- Slashing: a `Rejected` challenge resolution slashes 10% of stake; zero stake deactivates the provider
 - Signature threshold requires multiple independent sources for verification
 - Coupon distributions consume only `Verified` reports (enforced by `CouponEngine`)
-- Stake requirement (future)
 - Multi-sig for high-value reports

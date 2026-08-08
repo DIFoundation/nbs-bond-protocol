@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod integration {
     use soroban_sdk::{
-        testutils::Address as _, Address, BytesN, Env, Symbol,
+        testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, Symbol,
     };
     use nbbs_project_registry::{ProjectRegistry, ProjectRegistryClient};
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
@@ -422,10 +422,144 @@ mod integration {
             assert_eq!(verified.status, ReportStatus::Verified);
             assert_eq!(contracts.oc_client.get_verification_count(&report_id), 2);
         }
+
+        #[test]
+        fn test_rejected_challenge_slashes_provider() {
+            let env = Env::default();
+            env.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&env);
+            let alice = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let challenger = Address::generate(&env);
+            let contracts = deploy_contracts(&env, &admin);
+
+            let project_id = make_project_id(&env, 1);
+
+            let pid = contracts.pr_client.register_project(
+                &alice,
+                &make_ipfs_hash(&env, 1),
+                &Symbol::new(&env, "VCS"),
+                &Symbol::new(&env, "US"),
+                &0,
+            );
+            contracts.pr_client.approve_project(&admin, &pid, &0);
+
+            contracts.oc_client.register_provider(
+                &admin,
+                &oracle,
+                &Symbol::new(&env, "verra_vcs"),
+                &0,
+            );
+            contracts.oc_client.add_stake(&oracle, &100_000i128, &0);
+
+            let report_id = contracts.oc_client.submit_report(
+                &oracle,
+                &project_id,
+                &1000u64,
+                &2000u64,
+                &100_000i128,
+                &Symbol::new(&env, "verra_vcs"),
+                &make_ipfs_hash(&env, 1),
+                &1,
+            );
+
+            contracts.oc_client.challenge_report(
+                &challenger,
+                &report_id,
+                &make_ipfs_hash(&env, 2),
+                &0,
+            );
+
+            contracts.oc_client.resolve_challenge(
+                &admin,
+                &report_id,
+                &ReportStatus::Rejected,
+                &1,
+            );
+
+            let provider = contracts.oc_client.get_provider(&oracle);
+            assert_eq!(provider.stake, 90_000);
+            assert!(provider.active);
+
+            let report = contracts.oc_client.get_report(&report_id);
+            assert_eq!(report.status, ReportStatus::Rejected);
+        }
     }
 
     mod dex {
         use super::*;
+
+        #[test]
+        fn test_full_settlement_with_seller_withdrawal() {
+            let env = Env::default();
+            env.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&env);
+            let alice = Address::generate(&env);
+            let bob = Address::generate(&env);
+            let contracts = deploy_contracts(&env, &admin);
+
+            let project_id = make_project_id(&env, 1);
+
+            let pid = contracts.pr_client.register_project(
+                &alice,
+                &make_ipfs_hash(&env, 1),
+                &Symbol::new(&env, "VCS"),
+                &Symbol::new(&env, "US"),
+                &0,
+            );
+            contracts.pr_client.approve_project(&admin, &pid, &0);
+
+            let config = make_bond_config(&env, project_id, 10_000);
+            let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
+            contracts.bi_client.subscribe(&alice, &bond_id, &5_000, &0);
+
+            let order_id = contracts.dr_client.list_bond_tokens(
+                &alice,
+                &bond_id,
+                &1_000i128,
+                &100i128,
+                &Symbol::new(&env, "USDC"),
+                &3600u64,
+                &0,
+            );
+
+            contracts
+                .dr_client
+                .deposit_quote(&bob, &Symbol::new(&env, "USDC"), &100_000i128, &0);
+
+            contracts
+                .dr_client
+                .execute_purchase(&bob, &order_id, &100i128, &1_000i128, &1);
+
+            let order = contracts.dr_client.get_order(&order_id);
+            assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
+
+            assert_eq!(
+                contracts
+                    .dr_client
+                    .get_quote_balance(&alice, &Symbol::new(&env, "USDC")),
+                100_000
+            );
+            assert_eq!(
+                contracts
+                    .dr_client
+                    .get_quote_balance(&bob, &Symbol::new(&env, "USDC")),
+                0
+            );
+
+            contracts
+                .dr_client
+                .withdraw_quote(&alice, &Symbol::new(&env, "USDC"), &100_000i128, &1);
+
+            assert_eq!(
+                contracts
+                    .dr_client
+                    .get_quote_balance(&alice, &Symbol::new(&env, "USDC")),
+                0
+            );
+        }
 
         #[test]
         fn test_order_full_fill() {
@@ -600,6 +734,122 @@ mod integration {
 
     mod security {
         use super::*;
+
+        #[test]
+        fn test_time_based_maturity_and_redeem() {
+            let env = Env::default();
+            env.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&env);
+            let alice = Address::generate(&env);
+            let contracts = deploy_contracts(&env, &admin);
+
+            let project_id = make_project_id(&env, 1);
+
+            let pid = contracts.pr_client.register_project(
+                &alice,
+                &make_ipfs_hash(&env, 1),
+                &Symbol::new(&env, "VCS"),
+                &Symbol::new(&env, "US"),
+                &0,
+            );
+            contracts.pr_client.approve_project(&admin, &pid, &0);
+
+            let config = make_bond_config(&env, project_id, 10_000);
+            let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
+            contracts.bi_client.subscribe(&alice, &bond_id, &2_000, &0);
+
+            env.ledger().set_timestamp(config.maturity_date - 1);
+            let early = contracts
+                .bi_client
+                .try_mature_bond(&admin, &bond_id, &1);
+            assert_eq!(early, Err(Ok(BondError::Overflow)));
+
+            env.ledger().set_timestamp(config.maturity_date);
+            contracts.bi_client.mature_bond(&admin, &bond_id, &1);
+
+            let state = contracts.bi_client.get_bond_state(&bond_id);
+            assert_eq!(state.status, nbbs_shared::BondStatus::Matured);
+
+            contracts.bi_client.redeem(&alice, &bond_id, &2_000, &1);
+            assert_eq!(contracts.bi_client.get_holder_balance(&bond_id, &alice), 0);
+        }
+
+        #[test]
+        fn test_coupon_dust_reconciliation() {
+            let env = Env::default();
+            env.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&env);
+            let alice = Address::generate(&env);
+            let bob = Address::generate(&env);
+            let carol = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let contracts = deploy_contracts(&env, &admin);
+
+            let project_id = make_project_id(&env, 1);
+
+            let pid = contracts.pr_client.register_project(
+                &alice,
+                &make_ipfs_hash(&env, 1),
+                &Symbol::new(&env, "VCS"),
+                &Symbol::new(&env, "US"),
+                &0,
+            );
+            contracts.pr_client.approve_project(&admin, &pid, &0);
+
+            let config = make_bond_config(&env, project_id.clone(), 10_000);
+            let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
+
+            contracts.bi_client.subscribe(&alice, &bond_id, &1, &0);
+            contracts.bi_client.subscribe(&bob, &bond_id, &1, &0);
+            contracts.bi_client.subscribe(&carol, &bond_id, &1, &0);
+
+            contracts.oc_client.register_provider(
+                &admin,
+                &oracle,
+                &Symbol::new(&env, "verra_vcs"),
+                &0,
+            );
+
+            let report_id = contracts.oc_client.submit_report(
+                &oracle,
+                &project_id,
+                &1000u64,
+                &2000u64,
+                &100_000i128,
+                &Symbol::new(&env, "verra_vcs"),
+                &make_ipfs_hash(&env, 1),
+                &0,
+            );
+            contracts.oc_client.verify_report(&admin, &report_id, &1);
+
+            contracts.ce_client.register_bond(&admin, &bond_id, &project_id, &0);
+
+            let holders = soroban_sdk::vec![
+                &env,
+                alice.clone(),
+                bob.clone(),
+                carol.clone(),
+            ];
+            let result = contracts.ce_client.distribute_coupon(
+                &admin,
+                &bond_id,
+                &0,
+                &holders,
+                &report_id,
+                &1,
+            );
+
+            assert_eq!(result.total_credits, 99);
+            assert_eq!(result.holder_count, 3);
+
+            assert_eq!(contracts.ce_client.get_undistributed_total(&bond_id), 1);
+
+            let swept = contracts.ce_client.sweep_undistributed(&admin, &bond_id, &2);
+            assert_eq!(swept, 1);
+            assert_eq!(contracts.ce_client.get_undistributed_total(&bond_id), 0);
+        }
 
         #[test]
         fn test_nonce_replay() {

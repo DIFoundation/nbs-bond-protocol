@@ -21,19 +21,23 @@ pub fn bond_count(...)
 // Public functions
 pub fn distribute_coupon(caller, bond_id, period, holders, report_id, nonce)
 pub fn claim_credits(caller, bond_id, nonce)   // withdraw accrued credits
+pub fn sweep_undistributed(caller, bond_id, nonce)  // admin-only dust recovery
 pub fn accrued_credits(...)
 pub fn get_period_info(...)
 pub fn get_period_count(...)
+pub fn get_undistributed_total(...)
 ```
 
 ### OracleConsumer
 ```rust
 // Public functions
 pub fn register_provider(...)
+pub fn add_stake(...)              // commit provider collateral
+pub fn withdraw_stake(...)         // partial withdrawal of own stake
 pub fn submit_report(...)
 pub fn verify_report(...)            // independent verifier endorsement
 pub fn challenge_report(...)
-pub fn resolve_challenge(...)
+pub fn resolve_challenge(...)        // admin verdict; Rejected slashes 10% stake
 pub fn set_signature_threshold(...)  // required independent verifications
 pub fn get_report(...)
 pub fn get_provider(...)
@@ -44,8 +48,11 @@ pub fn get_report_verifiers(...)
 ### DEXRouter
 ```rust
 // Public functions
+pub fn deposit_quote(...)      // escrow quote asset for purchases
+pub fn withdraw_quote(...)     // pull escrowed proceeds back
+pub fn get_quote_balance(...)
 pub fn list_bond_tokens(...)
-pub fn execute_purchase(...)   // settles via BondIssuer.transfer
+pub fn execute_purchase(...)   // atomically transfers bonds + escrowed quote
 pub fn cancel_listing(...)
 pub fn get_order(...)
 pub fn get_orders_by_seller(...)
@@ -78,9 +85,11 @@ pub fn get_retired_balance(...)
 | BondIssuer | BondState(bond_id) | BondState | Current bond state |
 | CouponEngine | Coupon(bond_id, period) | CouponData | Coupon distribution |
 | CouponEngine | Accrued(bond_id, holder) | i128 | Accrued credits |
+| CouponEngine | UndistributedTotal(bond_id) | i128 | Unallocated coupon dust |
 | OracleConsumer | Report(report_id) | OracleReport | Measurement report |
-| OracleConsumer | Provider(addr) | ProviderInfo | Oracle provider |
+| OracleConsumer | Provider(addr) | OracleProvider | Oracle provider (stake, active) |
 | DEXRouter | Order(order_id) | OrderData | Marketplace order |
+| DEXRouter | Balance(symbol, addr) | i128 | Escrowed quote-asset balance |
 | ProjectRegistry | Project(project_id) | ProjectInfo | Project record |
 
 ## Cross-Contract Calls
@@ -93,12 +102,25 @@ DEXRouter ──► BondIssuer (settle purchase via transfer, debiting seller / 
 CreditRetirement ──► CouponEngine (verify credit ownership)
 ```
 
+## Bond Maturity
+
+- A bond matures when the ledger timestamp reaches its `maturity_date` — `mature_bond` rejects calls made before that instant (`BondError::Overflow`).
+- Once the maturity date elapses, `subscribe` and `transfer` are rejected even if the bond has not yet been admin-matured, so the bond's outstanding supply is frozen on schedule.
+- `redeem` still requires the explicit `Matured` state, keeping redemption a deliberate admin-acknowledged step.
+
+## Marketplace Settlement
+
+- Buyers must first `deposit_quote` a quote asset (e.g. USDC) into the DEXRouter; purchases otherwise fail with `DEXError::InsufficientFunds`.
+- `execute_purchase` atomically transfers bond tokens (`BondIssuer.transfer`) and escrowed quote (`price_per_token * amount`) from buyer to seller, so a fill either fully settles or fully reverts.
+- Sellers can `withdraw_quote` their proceeds; `get_quote_balance` reports escrowed balances by symbol.
+
 ## Coupon Integrity
 
 - `CouponEngine.distribute_coupon` accepts an **on-chain `report_id`** instead of a caller-supplied report, eliminating fabricated distributions.
 - It reads the report from the `OracleConsumer` contract and rejects any report whose status is not `Verified` (`ReportNotVerified`).
 - The report's `project_id` must match the bond's registered project, otherwise distribution is rejected.
 - The verified report id is persisted in `PeriodInfo`, making every distribution auditable back to its evidence.
+- Integer-division remainder that cannot be allocated to holders is recorded as `undistributed` per period and aggregated in `UndistributedTotal`; the admin can recover it via `sweep_undistributed`, preventing value from being silently lost.
 
 ## API Layer
 
