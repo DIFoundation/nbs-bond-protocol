@@ -53,9 +53,3 @@ export interface SlippageResponse {
   estimatedTotal: number;
   slippagePercent: number;
 }
-
-export interface QuoteBalanceResponse {
-  address: string;
-  quoteAsset: QuoteAsset;
-  balance: number;
-}

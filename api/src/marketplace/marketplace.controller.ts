@@ -16,7 +16,6 @@ import {
   QuoteBalanceResponse,
   QuoteTransactionResponse,
   SlippageResponse,
-  QuoteBalanceResponse,
 } from './interfaces/marketplace.interface';
 import { PaginatedResponse } from '../common/dto/pagination.dto';
 

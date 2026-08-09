@@ -123,75 +123,12 @@ export class DexService {
     return this.getOrder(orderId);
   }
 
-  async getQuoteBalance(address: string, quoteAsset: QuoteAsset): Promise<number> {
-    const result = await this.contractService.simulateCall({
-      contractAddress: DEX_ROUTER(),
-      method: 'get_quote_balance',
-      args: [
-        Address.fromString(address).toScVal(),
-        nativeToScVal(quoteAsset, { type: 'symbol' }),
-      ],
-    });
-
-    return Number(scValToNative(result));
-  }
-
-  async depositQuote(
-    address: string,
-    quoteAsset: QuoteAsset,
-    amount: number,
-  ): Promise<number> {
-    const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), address);
-
-    try {
-      await this.contractService.invokeContractMethod(
-        DEX_ROUTER(), 'deposit_quote', adminSecret,
-        [
-          Address.fromString(address).toScVal(),
-          nativeToScVal(quoteAsset, { type: 'symbol' }),
-          nativeToScVal(BigInt(amount), { type: 'i128' }),
-        ],
-        nonce,
-      );
-    } catch (error) {
-      throw this.mapDexError(error);
-    }
-
-    return this.getQuoteBalance(address, quoteAsset);
-  }
-
-  async withdrawQuote(
-    address: string,
-    quoteAsset: QuoteAsset,
-    amount: number,
-  ): Promise<number> {
-    const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), address);
-
-    try {
-      await this.contractService.invokeContractMethod(
-        DEX_ROUTER(), 'withdraw_quote', adminSecret,
-        [
-          Address.fromString(address).toScVal(),
-          nativeToScVal(quoteAsset, { type: 'symbol' }),
-          nativeToScVal(BigInt(amount), { type: 'i128' }),
-        ],
-        nonce,
-      );
-    } catch (error) {
-      throw this.mapDexError(error);
-    }
-
-    return this.getQuoteBalance(address, quoteAsset);
-  }
-
   async buyBondTokens(dto: BuyBondDto, buyerAddress: string): Promise<OrderResponse> {
     const order = await this.getOrder(dto.orderId);
     const proceeds = order.pricePerToken * dto.amount;
 
     const escrowed = await this.getQuoteBalance(buyerAddress, order.quoteAsset);
-    if (escrowed < proceeds) {
+    if (escrowed.balance < proceeds) {
       throw new BadRequestException(
         `Insufficient escrowed ${order.quoteAsset}: required ${proceeds}, escrowed ${escrowed}. ` +
         'Call POST /marketplace/escrow/deposit before purchasing.',
