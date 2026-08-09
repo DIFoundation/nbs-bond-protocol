@@ -965,618 +965,276 @@ mod integration {
         }
     }
 
-    mod governance {
+    mod property {
         use super::*;
-        use nbbs_governance::{
-            Governance, GovernanceClient, ProposalStatus,
-        };
+        use proptest::prelude::*;
 
-        const TIMELOCK: u64 = 172_800;
-
-        struct Governed<'a> {
-            gov_id: Address,
-            gov: GovernanceClient<'a>,
-            signers: soroban_sdk::Vec<Address>,
-            pr_addr: Address,
-            pr: ProjectRegistryClient<'a>,
-            bi_addr: Address,
-            bi: BondIssuerClient<'a>,
-            oc_addr: Address,
-            oc: OracleConsumerClient<'a>,
-            ce_addr: Address,
-            ce: CouponEngineClient<'a>,
-            dr_addr: Address,
-            dr: DEXRouterClient<'a>,
-            cr_addr: Address,
-            cr: CreditRetirementClient<'a>,
-        }
-
-        fn make_signers(env: &Env, count: u32) -> soroban_sdk::Vec<Address> {
-            let mut signers = soroban_sdk::vec![env];
-            for _ in 0..count {
-                signers.push_back(Address::generate(env));
-            }
-            signers
-        }
-
-        fn deploy_governed<'a>(env: &'a Env) -> Governed<'a> {
-            let signers = make_signers(env, 5);
-            let threshold: u32 = 3;
-            let gov_id = env.register(Governance, (&signers, &threshold, &TIMELOCK));
-            let gov = GovernanceClient::new(env, &gov_id);
-
-            let pr_addr = env.register(ProjectRegistry, (gov_id.clone(),));
-            let pr = ProjectRegistryClient::new(env, &pr_addr);
-
-            let bi_addr = env.register(BondIssuer, (gov_id.clone(),));
-            let bi = BondIssuerClient::new(env, &bi_addr);
-
-            let oc_addr = env.register(OracleConsumer, (gov_id.clone(),));
-            let oc = OracleConsumerClient::new(env, &oc_addr);
-
-            let ce_addr = env.register(
-                CouponEngine,
-                (gov_id.clone(), bi_addr.clone(), oc_addr.clone()),
-            );
-            let ce = CouponEngineClient::new(env, &ce_addr);
-
-            let dr_addr = env.register(
-                DEXRouter,
-                (gov_id.clone(), bi_addr.clone(), ce_addr.clone()),
-            );
-            let dr = DEXRouterClient::new(env, &dr_addr);
-
-            let cr_addr = env.register(
-                CreditRetirement,
-                (gov_id.clone(), bi_addr.clone(), ce_addr.clone()),
-            );
-            let cr = CreditRetirementClient::new(env, &cr_addr);
-
-            Governed {
-                gov_id,
-                gov,
-                signers,
-                pr_addr,
-                pr,
-                bi_addr,
-                bi,
-                oc_addr,
-                oc,
-                ce_addr,
-                ce,
-                dr_addr,
-                dr,
-                cr_addr,
-                cr,
-            }
-        }
-
-        fn ratify_and_execute(
+        fn setup_project_and_bond(
             env: &Env,
-            gov: &GovernanceClient,
-            signers: &soroban_sdk::Vec<Address>,
-            nonces: &mut Vec<u64>,
-            target: &Address,
-            method: &Symbol,
-            args: &soroban_sdk::Vec<Val>,
-        ) -> u64 {
-            let proposal_id = gov.propose(
-                &signers.get(0).unwrap(),
-                target,
-                method,
-                &args.clone(),
-                &Symbol::new(env, "ratify"),
-                &nonces[0],
+            contracts: &TestContracts,
+            admin: &Address,
+            alice: &Address,
+            supply: i128,
+        ) -> (BytesN<32>, u64) {
+            let project_id = make_project_id(env, 1);
+            let pid = contracts.pr_client.register_project(
+                alice,
+                &make_ipfs_hash(env, 1),
+                &Symbol::new(env, "VCS"),
+                &Symbol::new(env, "US"),
+                &0,
             );
-            nonces[0] += 1;
-
-            gov.vote_approve(&signers.get(1).unwrap(), &proposal_id, &nonces[1]);
-            nonces[1] += 1;
-            gov.vote_approve(&signers.get(2).unwrap(), &proposal_id, &nonces[2]);
-            nonces[2] += 1;
-            gov.vote_approve(&signers.get(3).unwrap(), &proposal_id, &nonces[3]);
-            nonces[3] += 1;
-
-            env.ledger().set_timestamp(env.ledger().timestamp() + TIMELOCK);
-
-            gov.execute(&signers.get(0).unwrap(), &proposal_id, &nonces[0]);
-            nonces[0] += 1;
-
-            proposal_id
+            contracts.pr_client.approve_project(admin, &pid, &0);
+            let config = make_bond_config(env, project_id.clone(), supply);
+            let bond_id = contracts.bi_client.issue_bond(admin, &config, &0);
+            (project_id, bond_id)
         }
 
-        #[test]
-        fn test_ratified_parameter_change_takes_effect() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 64,
+                ..ProptestConfig::default()
+            })]
 
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
+            // Cross-contract DEX settlement conserves the quote ledger and the
+            // bond supply: a fill creates or destroys neither quote nor bonds.
+            #[test]
+            fn dex_settlement_conserves_value(
+                order_amount in 1i128..50_000i128,
+                price in 1i128..10_000i128,
+                fill in 1i128..50_000i128,
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let bob = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
 
-            assert_eq!(governed.oc.get_signature_threshold(), 1);
+                let (_project_id, bond_id) =
+                    setup_project_and_bond(&env, &contracts, &admin, &alice, 1_000_000);
 
-            let args = soroban_sdk::vec![&env, 3u32.into_val(&env)];
-            let proposal_id = ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-            );
+                contracts
+                    .bi_client
+                    .subscribe(&alice, &bond_id, &order_amount, &0);
 
-            assert_eq!(governed.oc.get_signature_threshold(), 3);
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Executed
-            );
-        }
+                let quote = Symbol::new(&env, "USDC");
+                let order_id = contracts.dr_client.list_bond_tokens(
+                    &alice,
+                    &bond_id,
+                    &order_amount,
+                    &price,
+                    &quote,
+                    &3600u64,
+                    &0,
+                );
 
-        #[test]
-        fn test_admin_functions_reject_direct_signer_calls() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
+                let deposit = order_amount * price;
+                contracts
+                    .dr_client
+                    .deposit_quote(&bob, &quote, &deposit, &0);
 
-            let governed = deploy_governed(&env);
-            let signer = governed.signers.get(0).unwrap();
+                let first = fill.min(order_amount);
+                contracts
+                    .dr_client
+                    .execute_purchase(&bob, &order_id, &price, &first, &1);
+                if first < order_amount {
+                    contracts.dr_client.execute_purchase(
+                        &bob,
+                        &order_id,
+                        &price,
+                        &(order_amount - first),
+                        &2,
+                    );
+                }
 
-            let result = governed
-                .oc
-                .try_set_signature_threshold(&signer, &5, &0);
-            assert_eq!(result, Err(Ok(OracleError::Unauthorized)));
+                let order = contracts.dr_client.get_order(&order_id);
+                prop_assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
 
-            let user = Address::generate(&env);
-            let pid = governed.pr.register_project(
-                &user,
-                &make_ipfs_hash(&env, 1),
-                &Symbol::new(&env, "VCS"),
-                &Symbol::new(&env, "US"),
-                &0,
-            );
-            let result = governed.pr.try_approve_project(&signer, &pid, &0);
-            assert_eq!(result, Err(Ok(RegistryError::Unauthorized)));
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&bob, &quote),
+                    0
+                );
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&alice, &quote),
+                    deposit
+                );
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&alice, &quote)
+                        + contracts.dr_client.get_quote_balance(&bob, &quote),
+                    deposit
+                );
 
-            let config = make_bond_config(&env, make_project_id(&env, 1), 10_000);
-            let result = governed.bi.try_issue_bond(&signer, &config, &0);
-            assert_eq!(result, Err(Ok(BondError::Unauthorized)));
-
-            let result = governed.ce.try_register_bond(
-                &signer,
-                &1,
-                &make_project_id(&env, 1),
-                &0,
-            );
-            assert_eq!(result, Err(Ok(BondError::Unauthorized)));
-
-            let result = governed.dr.try_clean_expired_orders(&signer, &0);
-            assert_eq!(result, Err(Ok(DEXError::Unauthorized)));
-        }
-
-        #[test]
-        fn test_timelock_blocks_early_execution() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            let args = soroban_sdk::vec![&env, 2u32.into_val(&env)];
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-            nonces[0] += 1;
-
-            governed.gov.vote_approve(
-                &governed.signers.get(1).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            governed.gov.vote_approve(
-                &governed.signers.get(2).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            governed.gov.vote_approve(
-                &governed.signers.get(3).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Queued
-            );
-
-            env.ledger().set_timestamp(1_000_000 + TIMELOCK - 1);
-            let result = governed
-                .gov
-                .try_execute(&governed.signers.get(0).unwrap(), &proposal_id, &1);
-            assert_eq!(result, Err(Ok(GovernanceError::TimelockNotElapsed)));
-
-            env.ledger().set_timestamp(1_000_000 + TIMELOCK);
-            governed
-                .gov
-                .execute(&governed.signers.get(0).unwrap(), &proposal_id, &1);
-
-            assert_eq!(governed.oc.get_signature_threshold(), 2);
-        }
-
-        #[test]
-        fn test_below_quorum_cannot_execute() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            let args = soroban_sdk::vec![&env, 4u32.into_val(&env)];
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-            nonces[0] += 1;
-
-            governed.gov.vote_approve(
-                &governed.signers.get(1).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            governed.gov.vote_approve(
-                &governed.signers.get(2).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Pending
-            );
-            assert_eq!(governed.oc.get_signature_threshold(), 1);
-
-            env.ledger().set_timestamp(1_000_000 + TIMELOCK);
-            let result = governed
-                .gov
-                .try_execute(&governed.signers.get(0).unwrap(), &proposal_id, &1);
-            assert_eq!(result, Err(Ok(GovernanceError::NotQueued)));
-
-            governed.gov.vote_approve(
-                &governed.signers.get(3).unwrap(),
-                &proposal_id,
-                &0,
-            );
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Queued
-            );
-
-            env.ledger().set_timestamp(1_000_000 + 2 * TIMELOCK);
-            governed
-                .gov
-                .execute(&governed.signers.get(0).unwrap(), &proposal_id, &1);
-
-            assert_eq!(governed.oc.get_signature_threshold(), 4);
-        }
-
-        #[test]
-        fn test_veto_quorum_rejects_proposal() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            let args = soroban_sdk::vec![&env, 5u32.into_val(&env)];
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-            nonces[0] += 1;
-
-            governed.gov.vote_veto(&governed.signers.get(1).unwrap(), &proposal_id, &0);
-            governed.gov.vote_veto(&governed.signers.get(2).unwrap(), &proposal_id, &0);
-            governed.gov.vote_veto(&governed.signers.get(3).unwrap(), &proposal_id, &0);
-
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Rejected
-            );
-
-            env.ledger().set_timestamp(1_000_000 + TIMELOCK);
-            let result = governed
-                .gov
-                .try_execute(&governed.signers.get(0).unwrap(), &proposal_id, &1);
-            assert_eq!(result, Err(Ok(GovernanceError::NotQueued)));
-
-            assert_eq!(governed.oc.get_signature_threshold(), 1);
-        }
-
-        #[test]
-        fn test_governance_approves_project() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            let user = Address::generate(&env);
-            let pid = governed.pr.register_project(
-                &user,
-                &make_ipfs_hash(&env, 1),
-                &Symbol::new(&env, "VCS"),
-                &Symbol::new(&env, "US"),
-                &0,
-            );
-            assert_eq!(
-                governed.pr.get_project(&pid).status,
-                ProjectStatus::Pending
-            );
-
-            let args = soroban_sdk::vec![&env, pid.into_val(&env)];
-            ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.pr_addr,
-                &Symbol::new(&env, "approve_project"),
-                &args,
-            );
-
-            assert_eq!(
-                governed.pr.get_project(&pid).status,
-                ProjectStatus::Approved
-            );
-        }
-
-        #[test]
-        fn test_non_signer_cannot_participate() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-
-            let governed = deploy_governed(&env);
-            let outsider = Address::generate(&env);
-            let args = soroban_sdk::vec![&env, 2u32.into_val(&env)];
-
-            let result = governed.gov.try_propose(
-                &outsider,
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-            assert_eq!(result, Err(Ok(GovernanceError::NotSigner)));
-
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-            let result = governed
-                .gov
-                .try_vote_approve(&outsider, &proposal_id, &0);
-            assert_eq!(result, Err(Ok(GovernanceError::NotSigner)));
-        }
-
-        #[test]
-        fn test_duplicate_vote_is_rejected() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-
-            let governed = deploy_governed(&env);
-            let args = soroban_sdk::vec![&env, 2u32.into_val(&env)];
-
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-
-            governed.gov.vote_approve(&governed.signers.get(1).unwrap(), &proposal_id, &0);
-            let result = governed
-                .gov
-                .try_vote_approve(&governed.signers.get(1).unwrap(), &proposal_id, &1);
-            assert_eq!(result, Err(Ok(GovernanceError::AlreadyVoted)));
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).approval_count,
-                1
-            );
-        }
-
-        #[test]
-        fn test_cancel_pending_proposal() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-
-            let governed = deploy_governed(&env);
-            let args = soroban_sdk::vec![&env, 2u32.into_val(&env)];
-
-            let proposal_id = governed.gov.propose(
-                &governed.signers.get(0).unwrap(),
-                &governed.oc_addr,
-                &Symbol::new(&env, "set_signature_threshold"),
-                &args,
-                &Symbol::new(&env, "ratify"),
-                &0,
-            );
-
-            governed.gov.cancel(&governed.signers.get(1).unwrap(), &proposal_id, &0);
-            assert_eq!(
-                governed.gov.get_proposal(&proposal_id).status,
-                ProposalStatus::Cancelled
-            );
-        }
-
-        #[test]
-        fn test_multiple_sequential_executions_keep_nonce_sync() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            for threshold in [2u32, 4, 5] {
-                let args = soroban_sdk::vec![&env, threshold.into_val(&env)];
-                ratify_and_execute(
-                    &env,
-                    &governed.gov,
-                    &governed.signers,
-                    &mut nonces,
-                    &governed.oc_addr,
-                    &Symbol::new(&env, "set_signature_threshold"),
-                    &args,
+                let alice_bond = contracts.bi_client.get_holder_balance(&bond_id, &alice);
+                let bob_bond = contracts.bi_client.get_holder_balance(&bond_id, &bob);
+                prop_assert_eq!(alice_bond + bob_bond, order_amount);
+                prop_assert_eq!(bob_bond, order_amount);
+                prop_assert_eq!(
+                    contracts.bi_client.total_subscribed(&bond_id),
+                    order_amount
                 );
             }
 
-            assert_eq!(governed.oc.get_signature_threshold(), 5);
-        }
+            // Cross-contract coupon distribution conserves credits: the sum of
+            // holder accrued credits plus the undistributed pool equals the total
+            // credits, and a sweep recovers the remainder in full.
+            #[test]
+            fn coupon_distribution_conserves_credits(
+                carbon in 0i128..1_000_000_000i128,
+                balances in proptest::collection::vec(1i128..10_000i128, 1..4),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let oracle = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
 
-        #[test]
-        fn test_governance_matures_bond() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
+                let total_subscribed: i128 = balances.iter().sum();
+                let project_id = make_project_id(&env, 1);
+                let pid = contracts.pr_client.register_project(
+                    &alice,
+                    &make_ipfs_hash(&env, 1),
+                    &Symbol::new(&env, "VCS"),
+                    &Symbol::new(&env, "US"),
+                    &0,
+                );
+                contracts.pr_client.approve_project(&admin, &pid, &0);
 
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
+                let config = make_bond_config(&env, project_id.clone(), total_subscribed);
+                let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
 
-            let config = make_bond_config(&env, make_project_id(&env, 1), 10_000);
-            let args = soroban_sdk::vec![&env, config.clone().into_val(&env)];
-            let bond_id = ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.bi_addr,
-                &Symbol::new(&env, "issue_bond"),
-                &args,
-            );
-            assert_eq!(bond_id, 1);
-            assert_eq!(
-                governed.bi.get_bond_state(&bond_id).status,
-                BondStatus::Active
-            );
+                let holders: std::vec::Vec<Address> = balances
+                    .iter()
+                    .map(|_| Address::generate(&env))
+                    .collect();
+                for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                    contracts.bi_client.subscribe(holder, &bond_id, &amount, &0);
+                }
 
-            env.ledger().set_timestamp(config.maturity_date);
+                contracts.oc_client.register_provider(
+                    &admin,
+                    &oracle,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+                let report_id = contracts.oc_client.submit_report(
+                    &oracle,
+                    &project_id,
+                    &1000u64,
+                    &2000u64,
+                    &carbon,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &make_ipfs_hash(&env, 1),
+                    &0,
+                );
+                contracts.oc_client.verify_report(&admin, &report_id, &1);
 
-            let args = soroban_sdk::vec![&env, bond_id.into_val(&env)];
-            ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.bi_addr,
-                &Symbol::new(&env, "mature_bond"),
-                &args,
-            );
+                contracts.ce_client.register_bond(&admin, &bond_id, &project_id, &0);
 
-            assert_eq!(
-                governed.bi.get_bond_state(&bond_id).status,
-                BondStatus::Matured
-            );
-        }
+                let mut holder_vec = soroban_sdk::Vec::new(&env);
+                for h in &holders {
+                    holder_vec.push_back(h.clone());
+                }
 
-        #[test]
-        fn test_governance_executes_dex_admin_cleanup() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
+                let total_credits = carbon / 1000;
+                contracts.ce_client.distribute_coupon(
+                    &admin,
+                    &bond_id,
+                    &0,
+                    &holder_vec,
+                    &report_id,
+                    &1,
+                );
 
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
+                let mut distributed = 0i128;
+                for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                    let cpt = if total_credits > 0 {
+                        total_credits * nbbs_coupon_engine::FIXED_POINT / total_subscribed
+                    } else {
+                        0
+                    };
+                    let expected = cpt * amount / nbbs_coupon_engine::FIXED_POINT;
+                    let accrued = contracts.ce_client.accrued_credits(&bond_id, holder);
+                    prop_assert_eq!(accrued, expected);
+                    distributed += expected;
+                }
+                let undistributed = total_credits.saturating_sub(distributed);
+                prop_assert_eq!(
+                    contracts.ce_client.get_undistributed_total(&bond_id),
+                    undistributed
+                );
+                prop_assert_eq!(distributed + undistributed, total_credits);
 
-            let config = make_bond_config(&env, make_project_id(&env, 1), 10_000);
-            let args = soroban_sdk::vec![&env, config.clone().into_val(&env)];
-            let bond_id = ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.bi_addr,
-                &Symbol::new(&env, "issue_bond"),
-                &args,
-            );
+                let swept = contracts.ce_client.sweep_undistributed(&admin, &bond_id, &2);
+                prop_assert_eq!(swept, undistributed);
+                prop_assert_eq!(contracts.ce_client.get_undistributed_total(&bond_id), 0);
+            }
 
-            let seller = Address::generate(&env);
-            governed.bi.subscribe(&seller, &bond_id, &1_000, &0);
-            let order_id = governed.dr.list_bond_tokens(
-                &seller,
-                &bond_id,
-                &1_000,
-                &10,
-                &Symbol::new(&env, "USDC"),
-                &60,
-                &0,
-            );
-            assert_eq!(order_id, 1);
+            // Cross-contract slashing never drives a provider's stake negative and
+            // deactivates the provider exactly when the stake reaches zero.
+            #[test]
+            fn cross_contract_slash_conserves_stake(stake in 1i128..1_000_000i128) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let oracle = Address::generate(&env);
+                let challenger = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
 
-            env.ledger().set_timestamp(1_000_100);
+                let project_id = make_project_id(&env, 1);
+                let pid = contracts.pr_client.register_project(
+                    &alice,
+                    &make_ipfs_hash(&env, 1),
+                    &Symbol::new(&env, "VCS"),
+                    &Symbol::new(&env, "US"),
+                    &0,
+                );
+                contracts.pr_client.approve_project(&admin, &pid, &0);
 
-            let args = soroban_sdk::vec![&env];
-            ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.dr_addr,
-                &Symbol::new(&env, "clean_expired_orders"),
-                &args,
-            );
+                contracts.oc_client.register_provider(
+                    &admin,
+                    &oracle,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+                contracts.oc_client.add_stake(&oracle, &stake, &0);
 
-            let order = governed.dr.get_order(&order_id);
-            assert_eq!(order.status, OrderStatus::Expired);
-        }
+                let report_id = contracts.oc_client.submit_report(
+                    &oracle,
+                    &project_id,
+                    &1000u64,
+                    &2000u64,
+                    &100_000i128,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &make_ipfs_hash(&env, 1),
+                    &1,
+                );
+                contracts.oc_client.challenge_report(
+                    &challenger,
+                    &report_id,
+                    &make_ipfs_hash(&env, 2),
+                    &0,
+                );
+                contracts.oc_client.resolve_challenge(
+                    &admin,
+                    &report_id,
+                    &ReportStatus::Rejected,
+                    &1,
+                );
 
-        #[test]
-        fn test_governance_executes_coupon_engine_admin() {
-            let env = Env::default();
-            env.mock_all_auths_allowing_non_root_auth();
-            env.ledger().set_timestamp(1_000_000);
-
-            let governed = deploy_governed(&env);
-            let mut nonces = vec![0u64; 5];
-
-            let project_id = make_project_id(&env, 1);
-            let args = soroban_sdk::vec![
-                &env,
-                1u64.into_val(&env),
-                project_id.clone().into_val(&env),
-            ];
-            ratify_and_execute(
-                &env,
-                &governed.gov,
-                &governed.signers,
-                &mut nonces,
-                &governed.ce_addr,
-                &Symbol::new(&env, "register_bond"),
-                &args,
-            );
-
-            assert_eq!(governed.ce.get_period_count(&1), 0);
+                let ppm = nbbs_oracle_consumer::SLASH_PENALTY_PPM;
+                let expected = if stake >= 10 {
+                    stake - stake * ppm / 1_000_000
+                } else {
+                    0
+                };
+                let provider = contracts.oc_client.get_provider(&oracle);
+                prop_assert_eq!(provider.stake, expected);
+                prop_assert!(provider.stake >= 0);
+                prop_assert_eq!(provider.active, provider.stake > 0);
+            }
         }
     }
 }

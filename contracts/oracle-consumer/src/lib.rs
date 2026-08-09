@@ -1672,4 +1672,152 @@ mod test {
         let reports = client.get_project_reports(&project_id);
         assert_eq!(reports.len(), 0);
     }
+
+    mod property {
+        extern crate std;
+
+        use super::*;
+        use proptest::prelude::*;
+
+        // Mirrors slash_provider: penalty is 10% (PPM) floored, never less than
+        // the full stake for dust balances, and never exceeds the stake.
+        fn expected_slashed_stake(stake: i128) -> i128 {
+            if stake <= 0 {
+                return 0;
+            }
+            let mut penalty = stake * SLASH_PENALTY_PPM / 1_000_000;
+            if penalty <= 0 {
+                penalty = stake;
+            }
+            if penalty > stake {
+                penalty = stake;
+            }
+            stake - penalty
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 128,
+                ..ProptestConfig::default()
+            })]
+
+            // Slashing conserves a non-negative stake: it never increases, never
+            // goes negative, and drives the stake to exactly zero for dust.
+            #[test]
+            fn slash_never_negative_or_increasing(stake in 0i128..1_000_000i128) {
+                let new = expected_slashed_stake(stake);
+                prop_assert!(new >= 0);
+                prop_assert!(new <= stake);
+                if stake > 0 {
+                    prop_assert!(new < stake);
+                }
+                // Deactivation happens at exactly zero stake.
+                prop_assert_eq!(new == 0, stake < 10);
+            }
+
+            // Above the dust threshold the penalty is exactly the PPM fraction.
+            #[test]
+            fn slash_matches_ppm(stake in 10i128..1_000_000i128) {
+                let new = expected_slashed_stake(stake);
+                let expected = stake - stake * SLASH_PENALTY_PPM / 1_000_000;
+                prop_assert_eq!(new, expected);
+                prop_assert!(new >= 0);
+            }
+
+            // On-chain: a rejected challenge applies the slash invariant and
+            // deactivates the provider iff its stake reaches zero.
+            #[test]
+            fn rejected_challenge_slash_invariant(stake in 1i128..1_000_000i128) {
+                let env = Env::default();
+                env.mock_all_auths();
+
+                let admin = Address::generate(&env);
+                let provider = Address::generate(&env);
+                let challenger = Address::generate(&env);
+                let project_id = create_project_id(&env, 1);
+
+                let contract_id = env.register(OracleConsumer, (admin.clone(),));
+                let client = OracleConsumerClient::new(&env, &contract_id);
+
+                client.register_provider(
+                    &admin,
+                    &provider,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+                client.add_stake(&provider, &stake, &0);
+
+                let report_id = client.submit_report(
+                    &provider,
+                    &project_id,
+                    &1000u64,
+                    &2000u64,
+                    &100_000i128,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &make_ipfs_hash(&env, 1),
+                    &1,
+                );
+                client.challenge_report(
+                    &challenger,
+                    &report_id,
+                    &make_ipfs_hash(&env, 2),
+                    &0,
+                );
+                client.resolve_challenge(
+                    &admin,
+                    &report_id,
+                    &ReportStatus::Rejected,
+                    &1,
+                );
+
+                let p = client.get_provider(&provider);
+                prop_assert_eq!(p.stake, expected_slashed_stake(stake));
+                prop_assert!(p.stake >= 0);
+                prop_assert_eq!(p.active, p.stake > 0);
+            }
+
+            // The stake ledger tracks a non-negative running balance through an
+            // arbitrary interleaving of deposits and withdrawals.
+            #[test]
+            fn stake_ledger_never_negative(
+                deposits in proptest::collection::vec(1i128..100_000i128, 1..15),
+                withdrawals in proptest::collection::vec(1i128..100_000i128, 1..15),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+
+                let admin = Address::generate(&env);
+                let provider = Address::generate(&env);
+                let contract_id = env.register(OracleConsumer, (admin.clone(),));
+                let client = OracleConsumerClient::new(&env, &contract_id);
+
+                client.register_provider(
+                    &admin,
+                    &provider,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+
+                let mut stake = 0i128;
+                let mut nonce = 0u64;
+                for d in deposits {
+                    client.add_stake(&provider, &d, &nonce);
+                    nonce += 1;
+                    stake += d;
+                    prop_assert_eq!(client.get_provider(&provider).stake, stake);
+                }
+                for w in withdrawals {
+                    if w <= stake {
+                        client.withdraw_stake(&provider, &w, &nonce);
+                        nonce += 1;
+                        stake -= w;
+                    } else {
+                        let res = client.try_withdraw_stake(&provider, &w, &nonce);
+                        prop_assert_eq!(res, Err(Ok(OracleError::InsufficientStake)));
+                    }
+                    prop_assert_eq!(client.get_provider(&provider).stake, stake);
+                }
+            }
+        }
+    }
 }

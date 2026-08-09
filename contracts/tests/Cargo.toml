@@ -13,3 +13,6 @@ nbbs-project-registry = { path = "../project-registry" }
 nbbs-credit-retirement = { path = "../credit-retirement" }
 nbbs-governance = { path = "../governance" }
 nbbs-shared = { path = "../shared" }
+
+[dev-dependencies]
+proptest = "1"
