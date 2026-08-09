@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import { ContractService } from '../stellar/contract.service';
 import { IpfsService } from '../projects/ipfs.service';

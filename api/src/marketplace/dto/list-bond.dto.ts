@@ -1,4 +1,4 @@
-import { IsString, IsNotEmpty, IsNumber, IsPositive, IsOptional, IsEnum } from 'class-validator';
+import { IsString, IsNumber, IsPositive, IsOptional, IsEnum } from 'class-validator';
 
 export class ListBondDto {
   @IsNumber()

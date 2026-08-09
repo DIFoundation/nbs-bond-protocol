@@ -1,5 +1,5 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { ContractService, ContractCallOptions } from '../stellar/contract.service';
+import { Injectable, BadRequestException } from '@nestjs/common';
+import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
 import { xdr, nativeToScVal, scValToNative, Address } from '@stellar/stellar-sdk';
@@ -118,7 +118,7 @@ export class BondsService {
   async subscribe(id: number, dto: SubscribeDto): Promise<SubscriptionResponse> {
     const investorSecret = process.env.INVESTOR_SECRET_KEY || '';
     const nonce = await this.nonceService.next(BOND_ISSUER(), dto.investorAddress);
-    const { result, transactionHash } = await this.contractService.invokeContractMethod(
+    const { transactionHash } = await this.contractService.invokeContractMethod(
       BOND_ISSUER(), 'subscribe', investorSecret,
       [
         Address.fromString(dto.investorAddress).toScVal(),

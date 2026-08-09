@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req,
+  Controller, Get, Post, Body, Param, Query,
   HttpCode, HttpStatus, UseGuards, ParseIntPipe,
 } from '@nestjs/common';
 import { BondsService } from './bonds.service';

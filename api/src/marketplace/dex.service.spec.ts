@@ -5,7 +5,6 @@ import { ContractService } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
 import { OrderStatus } from './interfaces/marketplace.interface';
-import { xdr, scValToNative, nativeToScVal, Address } from '@stellar/stellar-sdk';
 
 describe('DexService', () => {
   let service: DexService;
@@ -40,12 +39,9 @@ describe('DexService', () => {
   });
 
   describe('decodeOrder', () => {
-    const seller = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+    const SELLER = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
 
-describe('DexService', () => {
-  describe('decodeOrder', () => {
     it('maps the contract Order struct to an OrderResponse', async () => {
-      const { service } = await buildService(0);
       const raw = [
         BigInt(7),
         SELLER,
@@ -77,7 +73,6 @@ describe('DexService', () => {
       [3, OrderStatus.Cancelled],
       [4, OrderStatus.Expired],
     ])('maps status index %i to %s', async (index, expected) => {
-      const { service } = await buildService(0);
       const raw = [
         BigInt(1),
         SELLER,

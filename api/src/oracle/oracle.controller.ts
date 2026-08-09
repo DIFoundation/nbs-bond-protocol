@@ -1,5 +1,5 @@
 import {
-  Controller, Get, Post, Body, Param, Query, Req,
+  Controller, Get, Post, Body, Param, Req,
   HttpCode, HttpStatus, ParseIntPipe,
 } from '@nestjs/common';
 import { OracleService } from './oracle.service';

@@ -58,7 +58,7 @@ export class LiquidityService {
     return feeds;
   }
 
-  async getBestPrice(bondId: number, side: 'buy' | 'sell'): Promise<PriceLevel> {
+  async getBestPrice(bondId: number, _side: 'buy' | 'sell'): Promise<PriceLevel> {
     const ordersResult = await this.dexService.listOrders(bondId, 'Open', 1, 100);
     const openOrders = ordersResult.data;
 
