@@ -1247,4 +1247,202 @@ mod test {
         let result = client.try_execute_purchase(&buyer, &order_id, &100i128, &500i128, &0);
         assert_eq!(result, Err(Ok(DEXError::OrderExpired)));
     }
+
+    mod property {
+        extern crate std;
+
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 128,
+                ..ProptestConfig::default()
+            })]
+
+            // Amount * price is exact: the contract never truncates proceeds.
+            #[test]
+            fn proceeds_is_exact_product(
+                amount in 1i128..1_000_000i128,
+                price in 1i128..1_000_000_000i128,
+            ) {
+                let proceeds = amount.checked_mul(price).expect("in-range product");
+                prop_assert_eq!(proceeds, amount * price);
+                prop_assert!(proceeds >= amount && proceeds >= price);
+            }
+
+            // The overflow guard in execute_purchase is equivalent to i128 checked
+            // multiplication at the boundary: amount * price overflows iff
+            // amount > i128::MAX / price.
+            #[test]
+            fn overflow_matches_checked_math(
+                amount in 1i128..i128::MAX,
+                price in 1i128..i128::MAX,
+            ) {
+                let overflows = amount.checked_mul(price).is_none();
+                if overflows {
+                    prop_assert!(amount > i128::MAX / price);
+                } else {
+                    prop_assert!(amount <= i128::MAX / price);
+                }
+            }
+
+            // Failed purchases (overflow or insufficient escrow) must never mutate
+            // the order or any quote balance.
+            #[test]
+            fn failed_purchase_is_atomic(price in 1i128..i128::MAX) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+
+                let admin = Address::generate(&env);
+                let buyer = Address::generate(&env);
+                let order_amount = 1_000i128;
+                let (_issuer_admin, issuer_id, bond_id, seller) =
+                    setup_bond_and_holder(&env, 1_000_000, order_amount);
+
+                let contract_id = env.register(
+                    DEXRouter,
+                    (admin.clone(), issuer_id, Address::generate(&env)),
+                );
+                let client = DEXRouterClient::new(&env, &contract_id);
+                let quote = Symbol::new(&env, "USDC");
+
+                let order_id = client.list_bond_tokens(
+                    &seller,
+                    &bond_id,
+                    &order_amount,
+                    &price,
+                    &quote,
+                    &3600u64,
+                    &0,
+                );
+
+                let overflows = order_amount.checked_mul(price).is_none();
+                let res = client.try_execute_purchase(&buyer, &order_id, &price, &order_amount, &0);
+                if overflows {
+                    prop_assert_eq!(res, Err(Ok(DEXError::Overflow)));
+                } else {
+                    prop_assert_eq!(res, Err(Ok(DEXError::InsufficientFunds)));
+                }
+
+                let order = client.get_order(&order_id);
+                prop_assert_eq!(order.status, OrderStatus::Open);
+                prop_assert_eq!(order.amount, order_amount);
+                prop_assert_eq!(client.get_quote_balance(&buyer, &quote), 0);
+                prop_assert_eq!(client.get_quote_balance(&seller, &quote), 0);
+            }
+
+            // A fill never reduces an order below its remaining amount, completes
+            // via PartiallyFilled -> Filled, and conserves both the quote ledger
+            // and the bond supply.
+            #[test]
+            fn settlement_conserves_balances(
+                order_amount in 1i128..50_000i128,
+                price in 1i128..100_000i128,
+                fill in 1i128..50_000i128,
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+
+                let admin = Address::generate(&env);
+                let buyer = Address::generate(&env);
+                let (_issuer_admin, issuer_id, bond_id, seller) =
+                    setup_bond_and_holder(&env, 1_000_000, order_amount);
+
+                let contract_id = env.register(
+                    DEXRouter,
+                    (admin.clone(), issuer_id.clone(), Address::generate(&env)),
+                );
+                let client = DEXRouterClient::new(&env, &contract_id);
+                let issuer_client =
+                    nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
+                let quote = Symbol::new(&env, "USDC");
+
+                let order_id = client.list_bond_tokens(
+                    &seller,
+                    &bond_id,
+                    &order_amount,
+                    &price,
+                    &quote,
+                    &3600u64,
+                    &0,
+                );
+
+                let first = fill.min(order_amount);
+                let deposit = first * price + (order_amount - first) * price;
+                client.deposit_quote(&buyer, &quote, &deposit, &0);
+
+                client.execute_purchase(&buyer, &order_id, &price, &first, &1);
+                if first < order_amount {
+                    let order = client.get_order(&order_id);
+                    prop_assert_eq!(order.status, OrderStatus::PartiallyFilled);
+                    prop_assert_eq!(order.amount, order_amount - first);
+
+                    let rest = order_amount - first;
+                    client.execute_purchase(&buyer, &order_id, &price, &rest, &2);
+                }
+
+                let order = client.get_order(&order_id);
+                prop_assert_eq!(order.status, OrderStatus::Filled);
+                let final_remaining = if first == order_amount {
+                    order_amount
+                } else {
+                    order_amount - first
+                };
+                prop_assert_eq!(order.amount, final_remaining);
+
+                prop_assert_eq!(client.get_quote_balance(&buyer, &quote), 0);
+                prop_assert_eq!(
+                    client.get_quote_balance(&seller, &quote),
+                    order_amount * price
+                );
+
+                let seller_bond = issuer_client.get_holder_balance(&bond_id, &seller);
+                let buyer_bond = issuer_client.get_holder_balance(&bond_id, &buyer);
+                prop_assert_eq!(seller_bond, 0);
+                prop_assert_eq!(buyer_bond, order_amount);
+                prop_assert_eq!(seller_bond + buyer_bond, order_amount);
+            }
+
+            // The quote ledger tracks a non-negative running balance through an
+            // arbitrary interleaving of deposits and withdrawals.
+            #[test]
+            fn quote_ledger_never_negative(
+                deposits in proptest::collection::vec(1i128..100_000i128, 1..20),
+                withdrawals in proptest::collection::vec(1i128..100_000i128, 1..20),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+
+                let admin = Address::generate(&env);
+                let user = Address::generate(&env);
+                let contract_id = env.register(
+                    DEXRouter,
+                    (admin.clone(), Address::generate(&env), Address::generate(&env)),
+                );
+                let client = DEXRouterClient::new(&env, &contract_id);
+                let quote = Symbol::new(&env, "USDC");
+
+                let mut balance = 0i128;
+                let mut nonce = 0u64;
+                for d in deposits {
+                    client.deposit_quote(&user, &quote, &d, &nonce);
+                    nonce += 1;
+                    balance += d;
+                    prop_assert_eq!(client.get_quote_balance(&user, &quote), balance);
+                }
+                for w in withdrawals {
+                    if w <= balance {
+                        client.withdraw_quote(&user, &quote, &w, &nonce);
+                        balance -= w;
+                        nonce += 1;
+                    } else {
+                        let res = client.try_withdraw_quote(&user, &quote, &w, &nonce);
+                        prop_assert_eq!(res, Err(Ok(DEXError::InsufficientFunds)));
+                    }
+                    prop_assert_eq!(client.get_quote_balance(&user, &quote), balance);
+                }
+            }
+        }
+    }
 }

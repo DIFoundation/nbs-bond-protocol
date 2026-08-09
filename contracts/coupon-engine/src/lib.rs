@@ -940,4 +940,215 @@ mod test {
         let result = client.try_claim_credits(&holder, &1, &1);
         assert_eq!(result, Err(Ok(BondError::InvalidNonce)));
     }
+
+    mod property {
+        extern crate std;
+
+        use super::*;
+        use proptest::prelude::*;
+
+        fn expected_credits(total_credits: i128, total_subscribed: i128, balance: i128) -> i128 {
+            if total_subscribed <= 0 || total_credits <= 0 {
+                return 0;
+            }
+            let credits_per_token = total_credits * FIXED_POINT / total_subscribed;
+            credits_per_token * balance / FIXED_POINT
+        }
+
+        fn deploy_with_holders(
+            env: Env,
+            admin: Address,
+            balances: &[i128],
+        ) -> (TestEnv, std::vec::Vec<Address>, u64, i128) {
+            let t = deploy(env, admin);
+            let project_id = create_project_id(&t._env, 7);
+            let total_subscribed: i128 = balances.iter().sum();
+
+            let issuer = nbbs_bond_issuer::BondIssuerClient::new(&t._env, &t.issuer_id);
+            let mut config = make_bond_config(&t._env, &project_id);
+            config.total_supply = total_subscribed;
+            let bond_id = issuer.issue_bond(&t.issuer_admin, &config, &0);
+
+            let holders: std::vec::Vec<Address> = balances
+                .iter()
+                .map(|_| Address::generate(&t._env))
+                .collect();
+            for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                issuer.subscribe(holder, &bond_id, &amount, &0);
+            }
+
+            t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+            (t, holders, bond_id, total_subscribed)
+        }
+
+        fn setup_with_balances(
+            env: Env,
+            admin: Address,
+            balances: &[i128],
+            carbon: i128,
+        ) -> (TestEnv, std::vec::Vec<Address>, u64, i128, u64) {
+            let (t, holders, bond_id, total_subscribed) =
+                deploy_with_holders(env, admin, balances);
+            let project_id = create_project_id(&t._env, 7);
+            let report_id = submit_verified_report(&t._env, &t, &project_id, carbon, 0);
+            (t, holders, bond_id, total_subscribed, report_id)
+        }
+
+        fn expected_distributed(balances: &[i128], total_credits: i128, total_subscribed: i128) -> i128 {
+            balances
+                .iter()
+                .map(|&balance| expected_credits(total_credits, total_subscribed, balance))
+                .sum()
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 128,
+                ..ProptestConfig::default()
+            })]
+
+            // Pure pro-rata math: floor-based distribution never allocates more
+            // than the available credits and leaves a non-negative remainder that
+            // reconciles exactly with the distributed amount.
+            #[test]
+            fn pro_rata_never_over_distributes(
+                total_credits in 0i128..1_000_000i128,
+                balances in proptest::collection::vec(1i128..100_000i128, 1..20),
+            ) {
+                let total_subscribed: i128 = balances.iter().sum();
+                let mut distributed = 0i128;
+                for &balance in &balances {
+                    let credits = expected_credits(total_credits, total_subscribed, balance);
+                    prop_assert!(credits >= 0);
+                    prop_assert!(credits <= total_credits * balance / total_subscribed);
+                    distributed += credits;
+                }
+                let undistributed = total_credits.saturating_sub(distributed);
+                prop_assert!(undistributed >= 0);
+                prop_assert!(distributed <= total_credits);
+                prop_assert_eq!(distributed + undistributed, total_credits);
+            }
+
+            // On-chain invariant: sum of holder credits + undistributed == total
+            // credits for an arbitrary holder distribution and sequestration amount.
+            #[test]
+            fn distribution_conserves_credits(
+                carbon in 0i128..1_000_000_000i128,
+                balances in proptest::collection::vec(1i128..10_000i128, 1..5),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+
+                let admin = Address::generate(&env);
+                let (t, holders, bond_id, total_subscribed, report_id) =
+                    setup_with_balances(env, admin.clone(), &balances, carbon);
+
+                let mut holders_vec: Vec<Address> = Vec::new(&t._env);
+                for h in &holders {
+                    holders_vec.push_back(h.clone());
+                }
+
+                let total_credits = carbon / 1000;
+                let result = t.client.distribute_coupon(
+                    &t.admin,
+                    &bond_id,
+                    &0,
+                    &holders_vec,
+                    &report_id,
+                    &1,
+                );
+
+                let distributed =
+                    expected_distributed(&balances, total_credits, total_subscribed);
+                prop_assert_eq!(result.total_credits, distributed);
+
+                let mut credited_holders = 0u32;
+                for (holder, &balance) in holders.iter().zip(balances.iter()) {
+                    let expected =
+                        expected_credits(total_credits, total_subscribed, balance);
+                    prop_assert_eq!(t.client.accrued_credits(&bond_id, holder), expected);
+                    if expected > 0 {
+                        credited_holders += 1;
+                    }
+                }
+                prop_assert_eq!(result.holder_count, credited_holders);
+
+                let undistributed = total_credits.saturating_sub(distributed);
+                prop_assert_eq!(t.client.get_undistributed_total(&bond_id), undistributed);
+                prop_assert_eq!(distributed + undistributed, total_credits);
+
+                let swept = t.client.sweep_undistributed(&t.admin, &bond_id, &2);
+                prop_assert_eq!(swept, undistributed);
+                prop_assert_eq!(t.client.get_undistributed_total(&bond_id), 0);
+            }
+
+            // Conservation across multiple periods: the running undistributed pool
+            // is exactly the sum of each period's remainder, and the sum of all
+            // accrued credits plus that pool equals the total credits issued.
+            #[test]
+            fn multi_period_conserves_credits(
+                carbon_0 in 0i128..1_000_000i128,
+                carbon_1 in 0i128..1_000_000i128,
+                balances in proptest::collection::vec(1i128..10_000i128, 1..4),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+
+                let admin = Address::generate(&env);
+                let (t, holders, bond_id, total_subscribed) =
+                    deploy_with_holders(env, admin.clone(), &balances);
+
+                let mut holders_vec: Vec<Address> = Vec::new(&t._env);
+                for h in &holders {
+                    holders_vec.push_back(h.clone());
+                }
+
+                let mut sum_undistributed = 0i128;
+                for (period, &carbon) in [carbon_0, carbon_1].iter().enumerate() {
+                    let report_id = submit_verified_report(
+                        &t._env,
+                        &t,
+                        &create_project_id(&t._env, 7),
+                        carbon,
+                        (period as u64) * 2,
+                    );
+                    t.client.distribute_coupon(
+                        &t.admin,
+                        &bond_id,
+                        &(period as u32),
+                        &holders_vec,
+                        &report_id,
+                        &(1 + period as u64),
+                    );
+                    let total_credits = carbon / 1000;
+                    let distributed =
+                        expected_distributed(&balances, total_credits, total_subscribed);
+                    sum_undistributed += total_credits.saturating_sub(distributed);
+
+                    let info = t.client.get_period_info(&bond_id, &(period as u32));
+                    prop_assert_eq!(info.undistributed, total_credits.saturating_sub(distributed));
+                }
+
+                prop_assert_eq!(
+                    t.client.get_undistributed_total(&bond_id),
+                    sum_undistributed
+                );
+
+                let mut sum_accrued = 0i128;
+                for (holder, &balance) in holders.iter().zip(balances.iter()) {
+                    let mut holder_accrued = 0i128;
+                    for &carbon in [carbon_0, carbon_1].iter() {
+                        holder_accrued +=
+                            expected_credits(carbon / 1000, total_subscribed, balance);
+                    }
+                    sum_accrued += holder_accrued;
+                    prop_assert_eq!(t.client.accrued_credits(&bond_id, holder), holder_accrued);
+                }
+                prop_assert_eq!(
+                    sum_accrued + sum_undistributed,
+                    (carbon_0 / 1000) + (carbon_1 / 1000)
+                );
+            }
+        }
+    }
 }

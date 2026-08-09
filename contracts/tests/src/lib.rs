@@ -964,4 +964,277 @@ mod integration {
             assert_eq!(result, Err(Ok(OracleError::ProviderNotFound)));
         }
     }
+
+    mod property {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn setup_project_and_bond(
+            env: &Env,
+            contracts: &TestContracts,
+            admin: &Address,
+            alice: &Address,
+            supply: i128,
+        ) -> (BytesN<32>, u64) {
+            let project_id = make_project_id(env, 1);
+            let pid = contracts.pr_client.register_project(
+                alice,
+                &make_ipfs_hash(env, 1),
+                &Symbol::new(env, "VCS"),
+                &Symbol::new(env, "US"),
+                &0,
+            );
+            contracts.pr_client.approve_project(admin, &pid, &0);
+            let config = make_bond_config(env, project_id.clone(), supply);
+            let bond_id = contracts.bi_client.issue_bond(admin, &config, &0);
+            (project_id, bond_id)
+        }
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 64,
+                ..ProptestConfig::default()
+            })]
+
+            // Cross-contract DEX settlement conserves the quote ledger and the
+            // bond supply: a fill creates or destroys neither quote nor bonds.
+            #[test]
+            fn dex_settlement_conserves_value(
+                order_amount in 1i128..50_000i128,
+                price in 1i128..10_000i128,
+                fill in 1i128..50_000i128,
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let bob = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
+
+                let (_project_id, bond_id) =
+                    setup_project_and_bond(&env, &contracts, &admin, &alice, 1_000_000);
+
+                contracts
+                    .bi_client
+                    .subscribe(&alice, &bond_id, &order_amount, &0);
+
+                let quote = Symbol::new(&env, "USDC");
+                let order_id = contracts.dr_client.list_bond_tokens(
+                    &alice,
+                    &bond_id,
+                    &order_amount,
+                    &price,
+                    &quote,
+                    &3600u64,
+                    &0,
+                );
+
+                let deposit = order_amount * price;
+                contracts
+                    .dr_client
+                    .deposit_quote(&bob, &quote, &deposit, &0);
+
+                let first = fill.min(order_amount);
+                contracts
+                    .dr_client
+                    .execute_purchase(&bob, &order_id, &price, &first, &1);
+                if first < order_amount {
+                    contracts.dr_client.execute_purchase(
+                        &bob,
+                        &order_id,
+                        &price,
+                        &(order_amount - first),
+                        &2,
+                    );
+                }
+
+                let order = contracts.dr_client.get_order(&order_id);
+                prop_assert_eq!(order.status, nbbs_dex_router::OrderStatus::Filled);
+
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&bob, &quote),
+                    0
+                );
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&alice, &quote),
+                    deposit
+                );
+                prop_assert_eq!(
+                    contracts.dr_client.get_quote_balance(&alice, &quote)
+                        + contracts.dr_client.get_quote_balance(&bob, &quote),
+                    deposit
+                );
+
+                let alice_bond = contracts.bi_client.get_holder_balance(&bond_id, &alice);
+                let bob_bond = contracts.bi_client.get_holder_balance(&bond_id, &bob);
+                prop_assert_eq!(alice_bond + bob_bond, order_amount);
+                prop_assert_eq!(bob_bond, order_amount);
+                prop_assert_eq!(
+                    contracts.bi_client.total_subscribed(&bond_id),
+                    order_amount
+                );
+            }
+
+            // Cross-contract coupon distribution conserves credits: the sum of
+            // holder accrued credits plus the undistributed pool equals the total
+            // credits, and a sweep recovers the remainder in full.
+            #[test]
+            fn coupon_distribution_conserves_credits(
+                carbon in 0i128..1_000_000_000i128,
+                balances in proptest::collection::vec(1i128..10_000i128, 1..4),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let oracle = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
+
+                let total_subscribed: i128 = balances.iter().sum();
+                let project_id = make_project_id(&env, 1);
+                let pid = contracts.pr_client.register_project(
+                    &alice,
+                    &make_ipfs_hash(&env, 1),
+                    &Symbol::new(&env, "VCS"),
+                    &Symbol::new(&env, "US"),
+                    &0,
+                );
+                contracts.pr_client.approve_project(&admin, &pid, &0);
+
+                let config = make_bond_config(&env, project_id.clone(), total_subscribed);
+                let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
+
+                let holders: std::vec::Vec<Address> = balances
+                    .iter()
+                    .map(|_| Address::generate(&env))
+                    .collect();
+                for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                    contracts.bi_client.subscribe(holder, &bond_id, &amount, &0);
+                }
+
+                contracts.oc_client.register_provider(
+                    &admin,
+                    &oracle,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+                let report_id = contracts.oc_client.submit_report(
+                    &oracle,
+                    &project_id,
+                    &1000u64,
+                    &2000u64,
+                    &carbon,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &make_ipfs_hash(&env, 1),
+                    &0,
+                );
+                contracts.oc_client.verify_report(&admin, &report_id, &1);
+
+                contracts.ce_client.register_bond(&admin, &bond_id, &project_id, &0);
+
+                let mut holder_vec = soroban_sdk::Vec::new(&env);
+                for h in &holders {
+                    holder_vec.push_back(h.clone());
+                }
+
+                let total_credits = carbon / 1000;
+                contracts.ce_client.distribute_coupon(
+                    &admin,
+                    &bond_id,
+                    &0,
+                    &holder_vec,
+                    &report_id,
+                    &1,
+                );
+
+                let mut distributed = 0i128;
+                for (holder, &amount) in holders.iter().zip(balances.iter()) {
+                    let cpt = if total_credits > 0 {
+                        total_credits * nbbs_coupon_engine::FIXED_POINT / total_subscribed
+                    } else {
+                        0
+                    };
+                    let expected = cpt * amount / nbbs_coupon_engine::FIXED_POINT;
+                    let accrued = contracts.ce_client.accrued_credits(&bond_id, holder);
+                    prop_assert_eq!(accrued, expected);
+                    distributed += expected;
+                }
+                let undistributed = total_credits.saturating_sub(distributed);
+                prop_assert_eq!(
+                    contracts.ce_client.get_undistributed_total(&bond_id),
+                    undistributed
+                );
+                prop_assert_eq!(distributed + undistributed, total_credits);
+
+                let swept = contracts.ce_client.sweep_undistributed(&admin, &bond_id, &2);
+                prop_assert_eq!(swept, undistributed);
+                prop_assert_eq!(contracts.ce_client.get_undistributed_total(&bond_id), 0);
+            }
+
+            // Cross-contract slashing never drives a provider's stake negative and
+            // deactivates the provider exactly when the stake reaches zero.
+            #[test]
+            fn cross_contract_slash_conserves_stake(stake in 1i128..1_000_000i128) {
+                let env = Env::default();
+                env.mock_all_auths_allowing_non_root_auth();
+                let admin = Address::generate(&env);
+                let alice = Address::generate(&env);
+                let oracle = Address::generate(&env);
+                let challenger = Address::generate(&env);
+                let contracts = deploy_contracts(&env, &admin);
+
+                let project_id = make_project_id(&env, 1);
+                let pid = contracts.pr_client.register_project(
+                    &alice,
+                    &make_ipfs_hash(&env, 1),
+                    &Symbol::new(&env, "VCS"),
+                    &Symbol::new(&env, "US"),
+                    &0,
+                );
+                contracts.pr_client.approve_project(&admin, &pid, &0);
+
+                contracts.oc_client.register_provider(
+                    &admin,
+                    &oracle,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &0,
+                );
+                contracts.oc_client.add_stake(&oracle, &stake, &0);
+
+                let report_id = contracts.oc_client.submit_report(
+                    &oracle,
+                    &project_id,
+                    &1000u64,
+                    &2000u64,
+                    &100_000i128,
+                    &Symbol::new(&env, "verra_vcs"),
+                    &make_ipfs_hash(&env, 1),
+                    &1,
+                );
+                contracts.oc_client.challenge_report(
+                    &challenger,
+                    &report_id,
+                    &make_ipfs_hash(&env, 2),
+                    &0,
+                );
+                contracts.oc_client.resolve_challenge(
+                    &admin,
+                    &report_id,
+                    &ReportStatus::Rejected,
+                    &1,
+                );
+
+                let ppm = nbbs_oracle_consumer::SLASH_PENALTY_PPM;
+                let expected = if stake >= 10 {
+                    stake - stake * ppm / 1_000_000
+                } else {
+                    0
+                };
+                let provider = contracts.oc_client.get_provider(&oracle);
+                prop_assert_eq!(provider.stake, expected);
+                prop_assert!(provider.stake >= 0);
+                prop_assert_eq!(provider.active, provider.stake > 0);
+            }
+        }
+    }
 }

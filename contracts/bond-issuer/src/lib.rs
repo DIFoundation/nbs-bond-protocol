@@ -847,4 +847,178 @@ mod test {
         client.issue_bond(&admin, &config, &1);
         assert_eq!(client.bond_count(), 2);
     }
+
+    mod property {
+        extern crate std;
+
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(ProptestConfig {
+                cases: 64,
+                ..ProptestConfig::default()
+            })]
+
+            // Supply conservation: through an arbitrary sequence of subscriptions
+            // and transfers the sum of holder balances always equals
+            // total_subscribed, never exceeds total_supply, and each balance is
+            // non-negative.
+            #[test]
+            fn subscription_conserves_supply(
+                supply in 100i128..1_000_000i128,
+                subscribe_amounts in proptest::collection::vec(1i128..50_000i128, 0..20),
+                transfer_amounts in proptest::collection::vec(1i128..50_000i128, 0..20),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+                let admin = Address::generate(&env);
+                let users: std::vec::Vec<Address> =
+                    (0..3).map(|_| Address::generate(&env)).collect();
+                let contract_id = env.register(BondIssuer, (&admin,));
+                let client = BondIssuerClient::new(&env, &contract_id);
+
+                let mut config = make_config(&env);
+                config.total_supply = supply;
+                let bond_id = client.issue_bond(&admin, &config, &0);
+
+                let mut balances = [0i128; 3];
+                let mut total_subscribed = 0i128;
+                let mut nonces = [0u64; 3];
+
+                for (i, &amount) in subscribe_amounts.iter().enumerate() {
+                    let u = i % 3;
+                    if amount <= supply - total_subscribed {
+                        client.subscribe(&users[u], &bond_id, &amount, &nonces[u]);
+                        nonces[u] += 1;
+                        total_subscribed += amount;
+                        balances[u] += amount;
+                    } else {
+                        let res = client.try_subscribe(&users[u], &bond_id, &amount, &nonces[u]);
+                        prop_assert_eq!(res, Err(Ok(BondError::InsufficientSupply)));
+                    }
+                    let sum: i128 = balances.iter().sum();
+                    prop_assert_eq!(sum, total_subscribed);
+                    prop_assert!(total_subscribed <= supply);
+                    for b in &balances {
+                        prop_assert!(*b >= 0);
+                    }
+                }
+                prop_assert_eq!(client.total_subscribed(&bond_id), total_subscribed);
+
+                for (i, &amount) in transfer_amounts.iter().enumerate() {
+                    let from = i % 3;
+                    let to = (i + 1) % 3;
+                    if amount <= balances[from] {
+                        client.transfer(&users[from], &users[to], &bond_id, &amount);
+                        balances[from] -= amount;
+                        balances[to] += amount;
+                    } else {
+                        let res =
+                            client.try_transfer(&users[from], &users[to], &bond_id, &amount);
+                        prop_assert_eq!(res, Err(Ok(BondError::InsufficientSupply)));
+                    }
+                    let sum: i128 = balances.iter().sum();
+                    prop_assert_eq!(sum, total_subscribed);
+                    prop_assert_eq!(client.total_subscribed(&bond_id), total_subscribed);
+                    for b in &balances {
+                        prop_assert!(*b >= 0);
+                    }
+                    for (u, &bal) in balances.iter().enumerate() {
+                        prop_assert_eq!(client.get_holder_balance(&bond_id, &users[u]), bal);
+                    }
+                }
+            }
+
+            // Subscription/maturity state machine: Active permits subscribe and
+            // transfer, only the admin can mature and only at/after maturity_date,
+            // and after Matured subscribe/transfer are locked while redeem burns
+            // balances in lockstep with total_subscribed.
+            #[test]
+            fn maturity_state_machine(
+                supply in 100i128..100_000i128,
+                subscribe_amounts in proptest::collection::vec(1i128..10_000i128, 1..8),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+                let admin = Address::generate(&env);
+                let users: std::vec::Vec<Address> =
+                    (0..3).map(|_| Address::generate(&env)).collect();
+                let contract_id = env.register(BondIssuer, (&admin,));
+                let client = BondIssuerClient::new(&env, &contract_id);
+
+                let mut config = make_config(&env);
+                config.total_supply = supply;
+                let bond_id = client.issue_bond(&admin, &config, &0);
+
+                let mut balances = [0i128; 3];
+                let mut total_subscribed = 0i128;
+                let mut nonces = [0u64; 3];
+                for (i, &amount) in subscribe_amounts.iter().enumerate() {
+                    let u = i % 3;
+                    let capped = amount.min(supply - total_subscribed);
+                    if capped <= 0 {
+                        break;
+                    }
+                    client.subscribe(&users[u], &bond_id, &capped, &nonces[u]);
+                    nonces[u] += 1;
+                    total_subscribed += capped;
+                    balances[u] += capped;
+                }
+
+                let res = client.try_mature_bond(&admin, &bond_id, &1);
+                prop_assert_eq!(res, Err(Ok(BondError::Overflow)));
+                prop_assert_eq!(
+                    client.get_bond_state(&bond_id).status,
+                    BondStatus::Active
+                );
+
+                if total_subscribed < supply {
+                    client.subscribe(&users[0], &bond_id, &1, &nonces[0]);
+                    nonces[0] += 1;
+                    total_subscribed += 1;
+                    balances[0] += 1;
+                }
+
+                env.ledger().set_timestamp(config.maturity_date);
+                client.mature_bond(&admin, &bond_id, &1);
+                prop_assert_eq!(
+                    client.get_bond_state(&bond_id).status,
+                    BondStatus::Matured
+                );
+
+                let res = client.try_subscribe(&users[1], &bond_id, &1, &nonces[1]);
+                prop_assert_eq!(res, Err(Ok(BondError::BondAlreadyMatured)));
+                let res = client.try_transfer(&users[0], &users[1], &bond_id, &1);
+                prop_assert_eq!(res, Err(Ok(BondError::BondAlreadyMatured)));
+                let res = client.try_mature_bond(&admin, &bond_id, &2);
+                prop_assert_eq!(res, Err(Ok(BondError::BondAlreadyMatured)));
+
+                let amount = balances[0].min(supply);
+                if amount > 0 {
+                    client.redeem(&users[0], &bond_id, &amount, &nonces[0]);
+                    nonces[0] += 1;
+                    balances[0] -= amount;
+                    total_subscribed -= amount;
+                    prop_assert_eq!(client.total_subscribed(&bond_id), total_subscribed);
+                    prop_assert_eq!(
+                        client.get_holder_balance(&bond_id, &users[0]),
+                        balances[0]
+                    );
+
+                    let res = client.try_redeem(
+                        &users[0],
+                        &bond_id,
+                        &(balances[0] + 1),
+                        &nonces[0],
+                    );
+                    prop_assert_eq!(res, Err(Ok(BondError::InsufficientSupply)));
+                }
+
+                let sum: i128 = balances.iter().sum();
+                prop_assert_eq!(sum, total_subscribed);
+                prop_assert_eq!(client.total_subscribed(&bond_id), total_subscribed);
+            }
+        }
+    }
 }
