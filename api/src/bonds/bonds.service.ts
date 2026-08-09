@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { ContractService, ContractCallOptions } from '../stellar/contract.service';
 import { StellarService } from '../stellar/stellar.service';
 import { NonceService } from '../common/services/nonce.service';
@@ -19,11 +19,25 @@ import {
   UndistributedTotalResponse,
   SweepUndistributedResponse,
   BondStatusEnum,
+  BondMaturityStatusEnum,
   CreditTypeEnum,
 } from './interfaces/bond.interface';
 
 const BOND_ISSUER = () => process.env.BOND_ISSUER_ADDRESS || '';
 const COUPON_ENGINE = () => process.env.COUPON_ENGINE_ADDRESS || '';
+
+const BOND_ERROR_CODE = {
+  NotInitialized: 1,
+  Unauthorized: 2,
+  InvalidNonce: 3,
+  BondNotFound: 4,
+  BondAlreadyMatured: 5,
+  InsufficientSupply: 6,
+  ZeroAmount: 7,
+  ProjectNotApproved: 8,
+  Overflow: 9,
+  ReportNotVerified: 10,
+};
 
 @Injectable()
 export class BondsService {
@@ -251,11 +265,15 @@ export class BondsService {
     const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
     const nonce = await this.nonceService.next(BOND_ISSUER(), adminAddress);
 
-    await this.contractService.invokeContractMethod(
-      BOND_ISSUER(), 'mature_bond', adminSecret,
-      [Address.fromString(adminAddress).toScVal(), nativeToScVal(BigInt(id), { type: 'u64' })],
-      nonce,
-    );
+    try {
+      await this.contractService.invokeContractMethod(
+        BOND_ISSUER(), 'mature_bond', adminSecret,
+        [Address.fromString(adminAddress).toScVal(), nativeToScVal(BigInt(id), { type: 'u64' })],
+        nonce,
+      );
+    } catch (error) {
+      throw this.mapBondError(error, id);
+    }
 
     await this.redis.del(`bond:${id}`);
     return this.buildBondResponse(id);
@@ -285,18 +303,48 @@ export class BondsService {
     });
     const state = scValToNative(stateScVal) as any[];
 
+    const status = state[1] as BondStatusEnum;
+    const maturityDate = Number(config[4]);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const maturityStatus =
+      status === BondStatusEnum.Matured || nowSeconds >= maturityDate
+        ? BondMaturityStatusEnum.Matured
+        : BondMaturityStatusEnum.Active;
+
     return {
       id,
       projectId: Buffer.from(config[0] as Uint8Array).toString('hex'),
       faceValue: Number(config[1]),
       couponSchedule: (config[2] as any[]).map((v: bigint) => Number(v)),
       creditType: config[3] as CreditTypeEnum,
-      maturityDate: Number(config[4]),
+      maturityDate,
+      maturityStatus,
       totalSupply: Number(config[5]),
       totalSubscribed: Number(state[0]),
-      status: state[1] as BondStatusEnum,
+      status,
       createdAt: new Date(Number(state[2]) * 1000).toISOString(),
     };
+  }
+
+  private mapBondError(error: unknown, bondId: number): Error {
+    if (error instanceof BadRequestException) {
+      const message = error.message;
+      const match = message.match(/error code (\d+)/);
+      const code = match ? Number(match[1]) : undefined;
+
+      if (code === BOND_ERROR_CODE.Overflow) {
+        return new BadRequestException(
+          `Bond #${bondId} cannot be matured before its maturity date. ` +
+          'Maturation is only allowed once the maturity date has been reached.',
+        );
+      }
+
+      return error;
+    }
+    if (error instanceof Error) {
+      return new BadRequestException(error.message);
+    }
+    return new BadRequestException('Failed to mature bond');
   }
 
   private getAdminSecret(): string {

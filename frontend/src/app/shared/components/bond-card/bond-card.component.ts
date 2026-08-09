@@ -24,7 +24,7 @@ import { StatusBadgeComponent } from '../status-badge/status-badge.component';
         </div>
         <div class="bond-field">
           <span class="label">Maturity</span>
-          <span class="value">{{ bond().maturityDate | date }}</span>
+          <span class="value">{{ bond().maturityDate * 1000 | date }}</span>
         </div>
         <div class="bond-field">
           <span class="label">Credit Type</span>
