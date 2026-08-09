@@ -571,6 +571,13 @@ impl OracleConsumer {
         Ok(())
     }
 
+    pub fn get_signature_threshold(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SignatureThreshold)
+            .unwrap_or(1)
+    }
+
     pub fn add_stake(
         env: Env,
         provider: Address,

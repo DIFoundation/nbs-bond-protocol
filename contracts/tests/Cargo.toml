@@ -11,4 +11,5 @@ nbbs-oracle-consumer = { path = "../oracle-consumer" }
 nbbs-dex-router = { path = "../dex-router" }
 nbbs-project-registry = { path = "../project-registry" }
 nbbs-credit-retirement = { path = "../credit-retirement" }
+nbbs-governance = { path = "../governance" }
 nbbs-shared = { path = "../shared" }
