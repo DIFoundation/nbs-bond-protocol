@@ -69,3 +69,18 @@ pub enum CreditError {
     NotAHolder = 6,
     InvalidCertificate = 7,
 }
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracterror]
+pub enum GovernanceError {
+    NotInitialized = 1,
+    Unauthorized = 2,
+    InvalidNonce = 3,
+    NotSigner = 4,
+    ProposalNotFound = 5,
+    AlreadyVoted = 6,
+    NotPending = 7,
+    TimelockNotElapsed = 8,
+    NotQueued = 9,
+    AlreadyExecuted = 10,
+}

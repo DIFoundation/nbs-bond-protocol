@@ -1,17 +1,17 @@
 #[cfg(test)]
 mod integration {
     use soroban_sdk::{
-        testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, Symbol,
+        testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, IntoVal, Symbol, Val,
     };
     use nbbs_project_registry::{ProjectRegistry, ProjectRegistryClient};
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
     use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
     use nbbs_oracle_consumer::{OracleConsumer, OracleConsumerClient};
-    use nbbs_dex_router::{DEXRouter, DEXRouterClient};
+    use nbbs_dex_router::{DEXRouter, DEXRouterClient, OrderStatus};
     use nbbs_credit_retirement::{CreditRetirement, CreditRetirementClient};
     use nbbs_shared::{
-        BondConfig, BondError, CreditType, OracleError, ProjectStatus,
-        RegistryError, ReportStatus,
+        BondConfig, BondError, BondStatus, CreditType, DEXError, GovernanceError, OracleError,
+        ProjectStatus, RegistryError, ReportStatus,
     };
 
     fn make_project_id(env: &Env, value: u8) -> BytesN<32> {

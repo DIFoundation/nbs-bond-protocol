@@ -1045,6 +1045,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nbbs-governance"
+version = "0.1.0"
+dependencies = [
+ "nbbs-project-registry",
+ "nbbs-shared",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "nbbs-oracle-consumer"
 version = "0.1.0"
 dependencies = [
@@ -1076,6 +1085,7 @@ dependencies = [
  "nbbs-coupon-engine",
  "nbbs-credit-retirement",
  "nbbs-dex-router",
+ "nbbs-governance",
  "nbbs-oracle-consumer",
  "nbbs-project-registry",
  "nbbs-shared",
