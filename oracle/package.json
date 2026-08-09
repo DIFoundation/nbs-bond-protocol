@@ -2,11 +2,12 @@
   "name": "nbs-oracle",
   "version": "0.1.0",
   "private": true,
-  "description": "Standalone oracle adapters (Verra registry, satellite remote sensing, IoT sensors) that ingest, validate, and produce IPFS-anchored measurement reports.",
+  "description": "Standalone oracle adapters (Verra registry, satellite remote sensing, IoT sensors, blue carbon) that ingest, validate, and produce IPFS-anchored measurement reports.",
   "scripts": {
     "ingest:verra": "ts-node run.ts verra",
     "ingest:satellite": "ts-node run.ts satellite",
     "ingest:iot": "ts-node run.ts iot",
+    "ingest:blue-carbon": "ts-node run.ts blue-carbon",
     "ingest": "ts-node run.ts all",
     "test": "jest",
     "test:cov": "jest --coverage",

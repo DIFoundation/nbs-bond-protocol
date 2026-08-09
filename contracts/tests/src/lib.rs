@@ -1,17 +1,16 @@
 #[cfg(test)]
 mod integration {
     use soroban_sdk::{
-        testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, IntoVal, Symbol, Val,
+        testutils::Address as _, testutils::Ledger as _, Address, BytesN, Env, Symbol,
     };
     use nbbs_project_registry::{ProjectRegistry, ProjectRegistryClient};
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
     use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
     use nbbs_oracle_consumer::{OracleConsumer, OracleConsumerClient};
-    use nbbs_dex_router::{DEXRouter, DEXRouterClient, OrderStatus};
+    use nbbs_dex_router::{DEXRouter, DEXRouterClient};
     use nbbs_credit_retirement::{CreditRetirement, CreditRetirementClient};
     use nbbs_shared::{
-        BondConfig, BondError, BondStatus, CreditType, DEXError, GovernanceError, OracleError,
-        ProjectStatus, RegistryError, ReportStatus,
+        BondConfig, BondError, CreditType, OracleError, ProjectStatus, RegistryError, ReportStatus,
     };
 
     fn make_project_id(env: &Env, value: u8) -> BytesN<32> {
@@ -291,6 +290,107 @@ mod integration {
                 &1,
             );
             assert!(result.total_credits > 0);
+        }
+
+        #[test]
+        fn test_blue_carbon_lifecycle() {
+            let env = Env::default();
+            env.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&env);
+            let alice = Address::generate(&env);
+            let bob = Address::generate(&env);
+            let oracle = Address::generate(&env);
+            let contracts = deploy_contracts(&env, &admin);
+
+            let project_id = make_project_id(&env, 7);
+
+            let pid = contracts.pr_client.register_project(
+                &alice,
+                &make_ipfs_hash(&env, 7),
+                &Symbol::new(&env, "blue_carbon"),
+                &Symbol::new(&env, "US"),
+                &0,
+            );
+            assert_eq!(pid, 1);
+            contracts.pr_client.approve_project(&admin, &pid, &0);
+
+            let config = BondConfig {
+                project_id: project_id.clone(),
+                face_value: 1000,
+                coupon_schedule: soroban_sdk::vec![&env, 1_000_000u64, 2_000_000u64],
+                credit_type: CreditType::BlueCarbon,
+                maturity_date: 3_000_000,
+                total_supply: 10_000,
+            };
+            let bond_id = contracts.bi_client.issue_bond(&admin, &config, &0);
+            assert_eq!(bond_id, 1);
+
+            let bond = contracts.bi_client.get_bond(&bond_id);
+            assert_eq!(bond.credit_type, CreditType::BlueCarbon);
+
+            contracts.bi_client.subscribe(&bob, &bond_id, &1_000, &0);
+
+            contracts.oc_client.register_provider(
+                &admin,
+                &oracle,
+                &Symbol::new(&env, "blue_carbon"),
+                &0,
+            );
+
+            let report_id = contracts.oc_client.submit_report(
+                &oracle,
+                &project_id,
+                &1000u64,
+                &2000u64,
+                &86_000_000i128,
+                &Symbol::new(&env, "blue_carbon"),
+                &make_ipfs_hash(&env, 7),
+                &0,
+            );
+            assert_eq!(report_id, 1);
+
+            let report = contracts.oc_client.get_report(&report_id);
+            assert_eq!(report.methodology, Symbol::new(&env, "blue_carbon"));
+
+            contracts.oc_client.verify_report(&admin, &report_id, &1);
+            assert_eq!(
+                contracts.oc_client.get_report(&report_id).status,
+                ReportStatus::Verified
+            );
+
+            contracts.ce_client.register_bond(&admin, &bond_id, &project_id, &0);
+
+            let holders = soroban_sdk::vec![&env, bob.clone()];
+            let result = contracts.ce_client.distribute_coupon(
+                &admin,
+                &bond_id,
+                &0,
+                &holders,
+                &report_id,
+                &1,
+            );
+            assert!(result.total_credits > 0);
+            assert_eq!(result.holder_count, 1);
+
+            let accrued = contracts.ce_client.accrued_credits(&bond_id, &bob);
+            assert!(accrued > 0);
+
+            let credit_hash = make_ipfs_hash(&env, 42);
+            let retirement_id = contracts.cr_client.retire_credits(
+                &bob,
+                &bond_id,
+                &accrued,
+                &CreditType::BlueCarbon,
+                &credit_hash,
+                &0,
+            );
+            assert_eq!(retirement_id, 1);
+
+            let record = contracts.cr_client.get_retirement_record(&retirement_id);
+            assert_eq!(record.holder, bob);
+            assert_eq!(record.amount, accrued);
+            assert_eq!(record.credit_type, CreditType::BlueCarbon);
         }
     }
 

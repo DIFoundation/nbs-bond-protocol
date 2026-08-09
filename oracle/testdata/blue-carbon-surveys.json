@@ -1,0 +1,24 @@
+{
+  "surveys": [
+    {
+      "survey_id": "BC-2025-0112",
+      "survey_date": "2025-02-10",
+      "habitat": "mangrove",
+      "plot_area_ha": 1.0,
+      "aboveground_biomass_t_per_ha": 85,
+      "belowground_biomass_t_per_ha": 60,
+      "soil_organic_carbon_t_per_ha": 420,
+      "bulk_density_g_cm3": 1.1
+    },
+    {
+      "survey_id": "BC-2025-0118",
+      "survey_date": "2025-03-15",
+      "habitat": "mangrove",
+      "plot_area_ha": 1.0,
+      "aboveground_biomass_t_per_ha": 91,
+      "belowground_biomass_t_per_ha": 64,
+      "soil_organic_carbon_t_per_ha": 431,
+      "bulk_density_g_cm3": 1.1
+    }
+  ]
+}
