@@ -12,3 +12,6 @@ nbbs-dex-router = { path = "../dex-router" }
 nbbs-project-registry = { path = "../project-registry" }
 nbbs-credit-retirement = { path = "../credit-retirement" }
 nbbs-shared = { path = "../shared" }
+
+[dev-dependencies]
+proptest = "1"
