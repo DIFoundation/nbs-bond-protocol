@@ -6,6 +6,6 @@ import { IpfsService } from './ipfs.service';
 @Module({
   controllers: [ProjectsController],
   providers: [ProjectsService, IpfsService],
-  exports: [IpfsService],
+  exports: [IpfsService, ProjectsService],
 })
 export class ProjectsModule {}

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { OracleService } from './oracle.service';
+import { OracleMonitoringService } from './oracle.monitoring.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 
@@ -10,6 +11,7 @@ export class OracleScheduler {
 
   constructor(
     private readonly oracleService: OracleService,
+    private readonly monitoringService: OracleMonitoringService,
     private readonly verraProvider: VerraProvider,
     private readonly satelliteProvider: SatelliteProvider,
   ) {}
@@ -29,5 +31,19 @@ export class OracleScheduler {
     }
 
     this.logger.log('Oracle poll cycle completed');
+  }
+
+  @Cron('0 */6 * * *')
+  async monitorProviderReliability(): Promise<void> {
+    this.logger.log('Oracle reliability monitoring cycle started');
+
+    try {
+      const alerted = await this.monitoringService.alertStaleProjects();
+      this.logger.log(
+        `Oracle reliability monitoring cycle completed: ${alerted} alert(s) emitted`,
+      );
+    } catch (error) {
+      this.logger.error(`Oracle reliability monitoring error: ${error.message}`);
+    }
   }
 }

@@ -8,6 +8,7 @@
     "ingest:satellite": "ts-node run.ts satellite",
     "ingest:iot": "ts-node run.ts iot",
     "ingest": "ts-node run.ts all",
+    "monitor": "ts-node run.ts monitor",
     "test": "jest",
     "test:cov": "jest --coverage",
     "typecheck": "tsc --noEmit"

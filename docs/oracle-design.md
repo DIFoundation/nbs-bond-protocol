@@ -45,6 +45,27 @@ Providers stake collateral that is at risk if their reports are overturned:
 - Resolving a challenge to `Verified` imposes **no** penalty — the challenger is wrong and the provider is exonerated.
 - Every slash emits a `provider_slashed` event carrying the provider, penalty amount, remaining stake, and active flag.
 
+## Provider Reliability Observability
+
+The contract persists per-provider history so monitoring never has to replay
+events or scan every report:
+
+- `submit_report` increments a per-provider report counter.
+- `challenge_report` records the challenged report id against the report's provider.
+- `slash_provider` appends a `SlashRecord` (`report_id`, `penalty`,
+  `remaining_stake`, `timestamp`, `active_after`) to the provider's history.
+
+Query surface:
+
+- `get_provider_stats(provider)` → `reports_submitted`, `challenges_faced`,
+  `slashes`, `total_penalty`, `stake`, `active`.
+- `get_slash_history(provider)` → `Vec<SlashRecord>`.
+- `get_challenge_history(provider)` → `Vec<Challenge>` for that provider.
+
+These power the API's `GET /oracle/stats/:providerAddress` endpoint and the
+log-based staleness alerting described in
+[`runbook-degraded-providers.md`](./runbook-degraded-providers.md).
+
 ## Security Model
 - Provider whitelist (admin-managed)
 - Provider staking: committed collateral underwrites report quality; `add_stake` / `withdraw_stake` manage exposure

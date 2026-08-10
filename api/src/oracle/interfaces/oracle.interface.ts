@@ -16,6 +16,7 @@ export interface ReportResponse {
   providerAddress: string;
   status: ReportStatus;
   createdAt: string;
+  verifiedAt?: string;
 }
 
 export interface ChallengeResponse {
@@ -33,4 +34,62 @@ export interface ProviderResponse {
   name: string;
   active: boolean;
   registeredAt: string;
+}
+
+export interface SlashRecord {
+  reportId: number;
+  penalty: number;
+  remainingStake: number;
+  timestamp: string;
+  activeAfter: boolean;
+}
+
+export interface ChallengeRecord {
+  reportId: number;
+  challengerAddress: string;
+  counterEvidenceHash: string;
+  submittedAt: string;
+  resolved: boolean;
+  resolution: ReportStatus | null;
+}
+
+export interface ProviderStatsResponse {
+  providerAddress: string;
+  reportsSubmitted: number;
+  challengesFaced: number;
+  slashes: number;
+  totalPenalty: number;
+  stake: number;
+  active: boolean;
+}
+
+export interface ProviderStatsWithHistory extends ProviderStatsResponse {
+  slashHistory: SlashRecord[];
+  challengeHistory: ChallengeRecord[];
+}
+
+export interface StalenessMetric {
+  projectId: string;
+  providerAddress?: string;
+  lastVerifiedAt?: string;
+  expectedCadenceSeconds: number;
+  graceSeconds: number;
+  expectedNextReportAt?: string;
+  stalenessSeconds?: number;
+  isStale: boolean;
+}
+
+export interface ProviderStalenessMetric {
+  providerAddress: string;
+  lastVerifiedAt?: string;
+  expectedNextReportAt?: string;
+  stalenessSeconds?: number;
+  isStale: boolean;
+  projectIds: string[];
+}
+
+export interface OracleStalenessReport {
+  asOf: string;
+  projects: StalenessMetric[];
+  providers: ProviderStalenessMetric[];
 }

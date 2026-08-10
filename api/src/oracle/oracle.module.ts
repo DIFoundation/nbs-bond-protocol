@@ -4,6 +4,7 @@ import { ProjectsModule } from '../projects/projects.module';
 import { OracleController } from './oracle.controller';
 import { OracleService } from './oracle.service';
 import { OracleScheduler } from './oracle.scheduler';
+import { OracleMonitoringService } from './oracle.monitoring.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
 
@@ -13,9 +14,10 @@ import { SatelliteProvider } from './providers/satellite.provider';
   providers: [
     OracleService,
     OracleScheduler,
+    OracleMonitoringService,
     VerraProvider,
     SatelliteProvider,
   ],
-  exports: [OracleService],
+  exports: [OracleService, OracleMonitoringService],
 })
 export class OracleModule {}

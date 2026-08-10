@@ -3,6 +3,7 @@ import {
   HttpCode, HttpStatus, ParseIntPipe,
 } from '@nestjs/common';
 import { OracleService } from './oracle.service';
+import { OracleMonitoringService } from './oracle.monitoring.service';
 import { SubmitReportDto } from './dto/submit-report.dto';
 import { ChallengeDto } from './dto/challenge.dto';
 import { RegisterProviderDto } from './dto/register-provider.dto';
@@ -10,11 +11,16 @@ import {
   ReportResponse,
   ChallengeResponse,
   ProviderResponse,
+  ProviderStatsWithHistory,
+  OracleStalenessReport,
 } from './interfaces/oracle.interface';
 
 @Controller('oracle')
 export class OracleController {
-  constructor(private readonly oracleService: OracleService) {}
+  constructor(
+    private readonly oracleService: OracleService,
+    private readonly monitoringService: OracleMonitoringService,
+  ) {}
 
   @Post('reports')
   @HttpCode(HttpStatus.CREATED)
@@ -53,5 +59,17 @@ export class OracleController {
   @Get('providers')
   async listProviders(): Promise<ProviderResponse[]> {
     return this.oracleService.listProviders();
+  }
+
+  @Get('stats/:providerAddress')
+  async getProviderStats(
+    @Param('providerAddress') providerAddress: string,
+  ): Promise<ProviderStatsWithHistory> {
+    return this.oracleService.getProviderStats(providerAddress);
+  }
+
+  @Get('monitoring/staleness')
+  async staleness(): Promise<OracleStalenessReport> {
+    return this.monitoringService.computeStaleness();
   }
 }
