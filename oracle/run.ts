@@ -124,8 +124,19 @@ const ADAPTERS = {
   'blue-carbon': runBlueCarbon,
 } as const;
 
+async function runMonitor(): Promise<void> {
+  const { startMonitorServer, resolveAdapters } = await import('./monitor');
+  startMonitorServer(resolveAdapters());
+}
+
 async function main(): Promise<void> {
   const target = process.argv[2] ?? 'all';
+
+  if (target === 'monitor') {
+    await runMonitor();
+    return;
+  }
+
   if (target === 'all') {
     for (const run of Object.values(ADAPTERS)) {
       await run();
@@ -135,7 +146,7 @@ async function main(): Promise<void> {
   }
   const run = ADAPTERS[target as keyof typeof ADAPTERS];
   if (!run) {
-    console.error(`Unknown adapter '${target}'. Expected one of: ${Object.keys(ADAPTERS).join(', ')}, all`);
+    console.error(`Unknown adapter '${target}'. Expected one of: ${Object.keys(ADAPTERS).join(', ')}, all, monitor`);
     process.exit(1);
   }
   await run();

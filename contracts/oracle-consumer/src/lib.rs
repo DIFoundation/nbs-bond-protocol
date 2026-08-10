@@ -21,6 +21,9 @@ pub enum DataKey {
     SignatureThreshold,
     ChallengeWindow,
     Nonce(Address),
+    ProviderReportCount(Address),
+    ProviderChallenges(Address),
+    SlashHistory(Address),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -58,6 +61,27 @@ pub struct Challenge {
     pub submitted_at: u64,
     pub resolved: bool,
     pub resolution: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct SlashRecord {
+    pub report_id: u64,
+    pub penalty: i128,
+    pub remaining_stake: i128,
+    pub timestamp: u64,
+    pub active_after: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct ProviderStats {
+    pub reports_submitted: u64,
+    pub challenges_faced: u64,
+    pub slashes: u64,
+    pub total_penalty: i128,
+    pub stake: i128,
+    pub active: bool,
 }
 
 fn require_admin(env: &Env, caller: &Address) -> Result<(), OracleError> {
@@ -264,6 +288,15 @@ impl OracleConsumer {
             .instance()
             .set(&DataKey::ProjectReports(project_id.clone()), &project_reports);
 
+        let report_count: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderReportCount(provider.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderReportCount(provider.clone()), &(report_count + 1));
+
         env.events().publish(
             (Symbol::new(&env, "report_submitted"),),
             (report_id, provider, project_id),
@@ -432,6 +465,16 @@ impl OracleConsumer {
             .instance()
             .set(&DataKey::Report(report_id), &report_mut);
 
+        let mut provider_challenges: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderChallenges(report.provider.clone()))
+            .unwrap_or(vec![&env]);
+        provider_challenges.push_back(report_id);
+        env.storage()
+            .instance()
+            .set(&DataKey::ProviderChallenges(report.provider.clone()), &provider_challenges);
+
         env.events().publish(
             (Symbol::new(&env, "report_challenged"),),
             (report_id, challenger),
@@ -488,7 +531,7 @@ impl OracleConsumer {
             .set(&DataKey::Report(report_id), &report);
 
         if resolution == ReportStatus::Rejected {
-            slash_provider(&env, &report.provider);
+            slash_provider(&env, &report.provider, report_id);
         }
 
         env.events().publish(
@@ -546,6 +589,69 @@ impl OracleConsumer {
             .instance()
             .get(&DataKey::ReportVerifiers(report_id))
             .unwrap_or(vec![&env])
+    }
+
+    pub fn get_provider_stats(env: Env, provider: Address) -> Result<ProviderStats, OracleError> {
+        let p: OracleProvider = env
+            .storage()
+            .instance()
+            .get(&DataKey::Provider(provider.clone()))
+            .ok_or(OracleError::ProviderNotFound)?;
+
+        let reports_submitted: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderReportCount(provider.clone()))
+            .unwrap_or(0);
+
+        let challenges: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderChallenges(provider.clone()))
+            .unwrap_or(vec![&env]);
+
+        let history: Vec<SlashRecord> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SlashHistory(provider.clone()))
+            .unwrap_or(vec![&env]);
+
+        let mut total_penalty: i128 = 0;
+        for record in history.iter() {
+            total_penalty += record.penalty;
+        }
+
+        Ok(ProviderStats {
+            reports_submitted,
+            challenges_faced: challenges.len() as u64,
+            slashes: history.len() as u64,
+            total_penalty,
+            stake: p.stake,
+            active: p.active,
+        })
+    }
+
+    pub fn get_slash_history(env: Env, provider: Address) -> Vec<SlashRecord> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SlashHistory(provider))
+            .unwrap_or(vec![&env])
+    }
+
+    pub fn get_challenge_history(env: Env, provider: Address) -> Vec<Challenge> {
+        let ids: Vec<u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ProviderChallenges(provider))
+            .unwrap_or(vec![&env]);
+
+        let mut challenges: Vec<Challenge> = vec![&env];
+        for id in ids.iter() {
+            if let Some(challenge) = env.storage().instance().get(&DataKey::Challenge(id)) {
+                challenges.push_back(challenge);
+            }
+        }
+        challenges
     }
 
     pub fn set_signature_threshold(
@@ -656,7 +762,7 @@ impl OracleConsumer {
     }
 }
 
-fn slash_provider(env: &Env, provider: &Address) {
+fn slash_provider(env: &Env, provider: &Address, report_id: u64) {
     let mut p: OracleProvider = env
         .storage()
         .instance()
@@ -678,6 +784,22 @@ fn slash_provider(env: &Env, provider: &Address) {
     env.storage()
         .instance()
         .set(&DataKey::Provider(provider.clone()), &p);
+
+    let mut history: Vec<SlashRecord> = env
+        .storage()
+        .instance()
+        .get(&DataKey::SlashHistory(provider.clone()))
+        .unwrap_or(vec![&env]);
+    history.push_back(SlashRecord {
+        report_id,
+        penalty,
+        remaining_stake: p.stake,
+        timestamp: env.ledger().timestamp(),
+        active_after: p.active,
+    });
+    env.storage()
+        .instance()
+        .set(&DataKey::SlashHistory(provider.clone()), &history);
 
     env.events().publish(
         (Symbol::new(env, "provider_slashed"),),
@@ -1470,6 +1592,122 @@ mod test {
         let provider_state = client.get_provider(&provider);
         assert_eq!(provider_state.stake, 100_000);
         assert!(provider_state.active);
+    }
+
+    #[test]
+    fn test_provider_stats_and_slash_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+        let challenger = Address::generate(&env);
+        let project_id = create_project_id(&env, 1);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+        client.add_stake(&provider, &100_000i128, &0);
+
+        let report_id = client.submit_report(
+            &provider,
+            &project_id,
+            &1000u64,
+            &2000u64,
+            &100_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &1,
+        );
+        client.submit_report(
+            &provider,
+            &project_id,
+            &2001u64,
+            &3000u64,
+            &120_000i128,
+            &Symbol::new(&env, "verra_vcs"),
+            &make_ipfs_hash(&env, 1),
+            &2,
+        );
+
+        client.challenge_report(
+            &challenger,
+            &report_id,
+            &make_ipfs_hash(&env, 2),
+            &0,
+        );
+
+        client.resolve_challenge(
+            &admin,
+            &report_id,
+            &ReportStatus::Rejected,
+            &1,
+        );
+
+        let stats = client.get_provider_stats(&provider);
+        assert_eq!(stats.reports_submitted, 2);
+        assert_eq!(stats.challenges_faced, 1);
+        assert_eq!(stats.slashes, 1);
+        assert_eq!(stats.total_penalty, 10_000);
+        assert_eq!(stats.stake, 90_000);
+        assert!(stats.active);
+
+        let history = client.get_slash_history(&provider);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history.get(0).unwrap().report_id, report_id);
+        assert_eq!(history.get(0).unwrap().penalty, 10_000);
+        assert_eq!(history.get(0).unwrap().remaining_stake, 90_000);
+        assert!(history.get(0).unwrap().active_after);
+
+        let challenges = client.get_challenge_history(&provider);
+        assert_eq!(challenges.len(), 1);
+        assert_eq!(challenges.get(0).unwrap().report_id, report_id);
+        assert!(challenges.get(0).unwrap().resolved);
+        assert_eq!(
+            challenges.get(0).unwrap().resolution,
+            ReportStatus::Rejected as u32
+        );
+    }
+
+    #[test]
+    fn test_provider_stats_initial_zeros() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let provider = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
+
+        let stats = client.get_provider_stats(&provider);
+        assert_eq!(stats.reports_submitted, 0);
+        assert_eq!(stats.challenges_faced, 0);
+        assert_eq!(stats.slashes, 0);
+        assert_eq!(stats.total_penalty, 0);
+        assert_eq!(stats.stake, 0);
+        assert!(stats.active);
+
+        assert_eq!(client.get_slash_history(&provider).len(), 0);
+        assert_eq!(client.get_challenge_history(&provider).len(), 0);
+    }
+
+    #[test]
+    fn test_provider_stats_nonexistent_provider() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let stranger = Address::generate(&env);
+
+        let contract_id = env.register(OracleConsumer, (admin.clone(),));
+        let client = OracleConsumerClient::new(&env, &contract_id);
+
+        let result = client.try_get_provider_stats(&stranger);
+        assert_eq!(result, Err(Ok(OracleError::ProviderNotFound)));
     }
 
     fn register_provider_and_submit(

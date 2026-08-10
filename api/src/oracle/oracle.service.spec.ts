@@ -95,4 +95,84 @@ describe('OracleService', () => {
       expect(scVal.bytes().length).toBe(32);
     });
   });
+
+  describe('decodeSlashRecord', () => {
+    it('maps a SlashRecord struct to a SlashRecord response', () => {
+      const raw = {
+        report_id: BigInt(7),
+        penalty: BigInt(10_000),
+        remaining_stake: BigInt(90_000),
+        timestamp: BigInt(1700000000),
+        active_after: true,
+      };
+
+      expect((service as any).decodeSlashRecord(raw)).toEqual({
+        reportId: 7,
+        penalty: 10_000,
+        remainingStake: 90_000,
+        timestamp: new Date(1700000000 * 1000).toISOString(),
+        activeAfter: true,
+      });
+    });
+
+    it('handles array-encoded structs', () => {
+      const raw = [
+        BigInt(7),
+        BigInt(10_000),
+        BigInt(90_000),
+        BigInt(1700000000),
+        true,
+      ];
+
+      expect((service as any).decodeSlashRecord(raw)).toEqual({
+        reportId: 7,
+        penalty: 10_000,
+        remainingStake: 90_000,
+        timestamp: new Date(1700000000 * 1000).toISOString(),
+        activeAfter: true,
+      });
+    });
+  });
+
+  describe('decodeChallengeRecord', () => {
+    it('maps a Challenge struct to a ChallengeRecord response', () => {
+      const raw = {
+        report_id: BigInt(7),
+        challenger: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        counter_evidence_hash: Buffer.from('a1b2'.padEnd(64, '0'), 'hex'),
+        submitted_at: BigInt(1699990000),
+        resolved: true,
+        resolution: 3,
+      };
+
+      expect((service as any).decodeChallengeRecord(raw)).toEqual({
+        reportId: 7,
+        challengerAddress: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        counterEvidenceHash: 'a1b2'.padEnd(64, '0'),
+        submittedAt: new Date(1699990000 * 1000).toISOString(),
+        resolved: true,
+        resolution: ReportStatus.Rejected,
+      });
+    });
+
+    it('returns null resolution for unresolved challenges', () => {
+      const raw = {
+        report_id: BigInt(7),
+        challenger: 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+        counter_evidence_hash: Buffer.alloc(32),
+        submitted_at: BigInt(1699990000),
+        resolved: false,
+        resolution: 0,
+      };
+
+      expect((service as any).decodeChallengeRecord(raw).resolution).toBeNull();
+    });
+  });
+
+  describe('toRecord / field', () => {
+    it('prefers object keys over array indices', () => {
+      expect((service as any).field({ slashes: 4 }, 'slashes', 2)).toBe(4);
+      expect((service as any).field([1, 2, 4], 'slashes', 2)).toBe(4);
+    });
+  });
 });

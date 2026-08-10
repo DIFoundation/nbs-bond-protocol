@@ -147,6 +147,8 @@ CreditRetirement ──► CouponEngine (verify credit ownership)
 | POST | /oracle/reports | Submit oracle report |
 | GET | /oracle/reports/:projectId | Get project oracle history |
 | POST | /oracle/challenge/:reportId | Challenge a report |
+| GET | /oracle/stats/:providerAddress | Provider stats + slash/challenge history |
+| GET | /oracle/monitoring/staleness | Per-project/provider staleness metric |
 
 ## Frontend
 

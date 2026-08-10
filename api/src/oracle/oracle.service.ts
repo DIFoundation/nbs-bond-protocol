@@ -10,6 +10,9 @@ import {
   ReportResponse,
   ChallengeResponse,
   ProviderResponse,
+  ProviderStatsWithHistory,
+  SlashRecord,
+  ChallengeRecord,
   ReportStatus,
 } from './interfaces/oracle.interface';
 import { createClient, RedisClientType } from '@redis/client';
@@ -188,6 +191,110 @@ export class OracleService {
     return providers;
   }
 
+  async getProviderStats(providerAddress: string): Promise<ProviderStatsWithHistory> {
+    const statsScVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_provider_stats',
+      args: [Address.fromString(providerAddress).toScVal()],
+    });
+    const stats = this.toRecord(scValToNative(statsScVal) as any);
+
+    const slashScVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_slash_history',
+      args: [Address.fromString(providerAddress).toScVal()],
+    });
+    const challengeScVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_challenge_history',
+      args: [Address.fromString(providerAddress).toScVal()],
+    });
+
+    const slashHistory = this.toArray(scValToNative(slashScVal)).map((record) =>
+      this.decodeSlashRecord(this.toRecord(record)),
+    );
+    const challengeHistory = this.toArray(scValToNative(challengeScVal)).map((record) =>
+      this.decodeChallengeRecord(this.toRecord(record)),
+    );
+
+    return {
+      providerAddress,
+      reportsSubmitted: Number(this.field(stats, 'reports_submitted', 0)),
+      challengesFaced: Number(this.field(stats, 'challenges_faced', 1)),
+      slashes: Number(this.field(stats, 'slashes', 2)),
+      totalPenalty: Number(this.field(stats, 'total_penalty', 3)),
+      stake: Number(this.field(stats, 'stake', 4)),
+      active: Boolean(this.field(stats, 'active', 5)),
+      slashHistory,
+      challengeHistory,
+    };
+  }
+
+  async getSlashHistory(providerAddress: string): Promise<SlashRecord[]> {
+    const scVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_slash_history',
+      args: [Address.fromString(providerAddress).toScVal()],
+    });
+    return this.toArray(scValToNative(scVal)).map((record) =>
+      this.decodeSlashRecord(this.toRecord(record)),
+    );
+  }
+
+  async getChallengeHistory(providerAddress: string): Promise<ChallengeRecord[]> {
+    const scVal = await this.contractService.simulateCall({
+      contractAddress: ORACLE_CONSUMER(),
+      method: 'get_challenge_history',
+      args: [Address.fromString(providerAddress).toScVal()],
+    });
+    return this.toArray(scValToNative(scVal)).map((record) =>
+      this.decodeChallengeRecord(this.toRecord(record)),
+    );
+  }
+
+  private decodeSlashRecord(record: Record<string, any>): SlashRecord {
+    return {
+      reportId: Number(this.field(record, 'report_id', 0)),
+      penalty: Number(this.field(record, 'penalty', 1)),
+      remainingStake: Number(this.field(record, 'remaining_stake', 2)),
+      timestamp: new Date(Number(this.field(record, 'timestamp', 3)) * 1000).toISOString(),
+      activeAfter: Boolean(this.field(record, 'active_after', 4)),
+    };
+  }
+
+  private decodeChallengeRecord(record: Record<string, any>): ChallengeRecord {
+    const resolution = Number(this.field(record, 'resolution', 5));
+    return {
+      reportId: Number(this.field(record, 'report_id', 0)),
+      challengerAddress: String(this.field(record, 'challenger', 1)),
+      counterEvidenceHash: Buffer.from(
+        this.field(record, 'counter_evidence_hash', 2) as Uint8Array,
+      ).toString('hex'),
+      submittedAt: new Date(Number(this.field(record, 'submitted_at', 3)) * 1000).toISOString(),
+      resolved: Boolean(this.field(record, 'resolved', 4)),
+      resolution: resolution > 0 ? this.reportStatusFromIndex(resolution) : null,
+    };
+  }
+
+  private toArray(value: unknown): any[] {
+    return Array.isArray(value) ? value : [];
+  }
+
+  private toRecord(value: any): Record<string, any> {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value;
+    }
+    return {};
+  }
+
+  private field(record: Record<string, any>, key: string, index: number): any {
+    if (record == null) return undefined;
+    if (key in record) return record[key];
+    const array = record as any;
+    if (Array.isArray(array)) return array[index];
+    return undefined;
+  }
+
   private decodeReport(data: any[]): ReportResponse {
     return {
       id: Number(data[0]),
@@ -200,6 +307,9 @@ export class OracleService {
       ipfsHash: Buffer.from(data[7] as Uint8Array).toString('hex'),
       status: this.reportStatusFromIndex(Number(data[8])),
       createdAt: new Date(Number(data[9]) * 1000).toISOString(),
+      verifiedAt: Number(data[10]) > 0
+        ? new Date(Number(data[10]) * 1000).toISOString()
+        : undefined,
     };
   }
 
