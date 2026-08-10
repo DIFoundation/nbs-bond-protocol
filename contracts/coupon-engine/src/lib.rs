@@ -1,10 +1,14 @@
 #![no_std]
 #![allow(deprecated)]
 use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal, Symbol, Vec};
-use nbbs_shared::{BondError, ReportStatus};
+use nbbs_shared::{BiodiversityMetrics, BondError, CreditType, ReportStatus};
 use nbbs_oracle_consumer::Report;
 
 pub const FIXED_POINT: i128 = 10_000_000;
+pub const CREDIT_DIVISOR: i128 = 1_000;
+pub const HABITAT_CREDIT_RATE: i128 = 1_000_000;
+pub const SPECIES_CREDIT_RATE: i128 = 100_000;
+pub const UNIT_CREDIT_RATE: i128 = 1_000_000;
 
 #[derive(Clone)]
 #[contracttype]
@@ -13,7 +17,9 @@ pub enum DataKey {
     PeriodInfo(u64, u32),
     PeriodCount(u64),
     AccruedCredits(u64, Address),
+    AccruedCreditsByType(u64, Address, CreditType),
     BondProject(u64),
+    BondCreditType(u64),
     UndistributedTotal(u64),
     Precision,
     BondIssuerAddress,
@@ -85,6 +91,20 @@ impl CouponEngine {
             .instance()
             .set(&DataKey::BondProject(bond_id), &project_id);
 
+        let bond_issuer: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondIssuerAddress)
+            .ok_or(BondError::NotInitialized)?;
+        let config: nbbs_shared::BondConfig = env.invoke_contract(
+            &bond_issuer,
+            &Symbol::new(&env, "get_bond"),
+            vec![&env, bond_id.into_val(&env)],
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::BondCreditType(bond_id), &config.credit_type);
+
         env.events().publish(
             (Symbol::new(&env, "bond_registered"),),
             (bond_id, project_id),
@@ -147,13 +167,33 @@ impl CouponEngine {
             }
         }
 
-        let total_credits = report.carbon_sequestered / 1000;
-
         let bond_issuer: Address = env
             .storage()
             .instance()
             .get(&DataKey::BondIssuerAddress)
             .expect("bond issuer not set");
+
+        let credit_type: CreditType = env
+            .storage()
+            .instance()
+            .get(&DataKey::BondCreditType(bond_id))
+            .ok_or(BondError::BondNotFound)?;
+
+        let carbon_total = report.carbon_sequestered / CREDIT_DIVISOR;
+        let (carbon_total, biodiversity_total) = match credit_type {
+            CreditType::Carbon | CreditType::BlueCarbon => (carbon_total, 0),
+            CreditType::Biodiversity => match report.biodiversity {
+                BiodiversityMetrics::Absent => return Err(BondError::InvalidReport),
+                ref metrics => (0, compute_biodiversity_credits(metrics)),
+            },
+            CreditType::Basket => match report.biodiversity {
+                BiodiversityMetrics::Absent => return Err(BondError::InvalidReport),
+                ref metrics => (carbon_total, compute_biodiversity_credits(metrics)),
+            },
+        };
+        let total_credits = carbon_total
+            .checked_add(biodiversity_total)
+            .ok_or(BondError::Overflow)?;
 
         let total_subscribed: i128 = env.invoke_contract(
             &bond_issuer,
@@ -169,6 +209,16 @@ impl CouponEngine {
         } else {
             0
         };
+        let carbon_per_token = if total_subscribed > 0 && carbon_total > 0 {
+            carbon_total * FIXED_POINT / total_subscribed
+        } else {
+            0
+        };
+        let biodiversity_per_token = if total_subscribed > 0 && biodiversity_total > 0 {
+            biodiversity_total * FIXED_POINT / total_subscribed
+        } else {
+            0
+        };
 
         for holder in holders.iter() {
             let balance: i128 = env.invoke_contract(
@@ -178,18 +228,71 @@ impl CouponEngine {
             );
 
             if balance > 0 {
-                let holder_credits = credits_per_token * balance / FIXED_POINT;
-                if holder_credits > 0 {
-                    total_holder_credits = total_holder_credits
-                        .checked_add(holder_credits)
-                        .ok_or(BondError::Overflow)?;
-
-                    let key = DataKey::AccruedCredits(bond_id, holder.clone());
-                    let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-                    env.storage()
-                        .persistent()
-                        .set(&key, &(accrued + holder_credits));
-                    holder_count += 1;
+                match credit_type {
+                    CreditType::Carbon | CreditType::BlueCarbon => {
+                        let holder_credits = credits_per_token * balance / FIXED_POINT;
+                        if holder_credits > 0 {
+                            total_holder_credits = total_holder_credits
+                                .checked_add(holder_credits)
+                                .ok_or(BondError::Overflow)?;
+                            accrue_credits(
+                                &env,
+                                bond_id,
+                                holder.clone(),
+                                CreditType::Carbon,
+                                holder_credits,
+                            )?;
+                            holder_count += 1;
+                        }
+                    }
+                    CreditType::Biodiversity => {
+                        let holder_credits = credits_per_token * balance / FIXED_POINT;
+                        if holder_credits > 0 {
+                            total_holder_credits = total_holder_credits
+                                .checked_add(holder_credits)
+                                .ok_or(BondError::Overflow)?;
+                            accrue_credits(
+                                &env,
+                                bond_id,
+                                holder.clone(),
+                                CreditType::Biodiversity,
+                                holder_credits,
+                            )?;
+                            holder_count += 1;
+                        }
+                    }
+                    CreditType::Basket => {
+                        let carbon_holder = carbon_per_token * balance / FIXED_POINT;
+                        let biodiversity_holder =
+                            biodiversity_per_token * balance / FIXED_POINT;
+                        let holder_credits = carbon_holder
+                            .checked_add(biodiversity_holder)
+                            .ok_or(BondError::Overflow)?;
+                        if holder_credits > 0 {
+                            total_holder_credits = total_holder_credits
+                                .checked_add(holder_credits)
+                                .ok_or(BondError::Overflow)?;
+                            if carbon_holder > 0 {
+                                accrue_credits(
+                                    &env,
+                                    bond_id,
+                                    holder.clone(),
+                                    CreditType::Carbon,
+                                    carbon_holder,
+                                )?;
+                            }
+                            if biodiversity_holder > 0 {
+                                accrue_credits(
+                                    &env,
+                                    bond_id,
+                                    holder.clone(),
+                                    CreditType::Biodiversity,
+                                    biodiversity_holder,
+                                )?;
+                            }
+                            holder_count += 1;
+                        }
+                    }
                 }
             }
         }
@@ -251,6 +354,29 @@ impl CouponEngine {
             .unwrap_or(0)
     }
 
+    pub fn accrued_credits_by_type(
+        env: Env,
+        bond_id: u64,
+        holder: Address,
+        credit_type: CreditType,
+    ) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AccruedCreditsByType(
+                bond_id,
+                holder,
+                credit_type,
+            ))
+            .unwrap_or(0)
+    }
+
+    pub fn get_bond_credit_type(env: Env, bond_id: u64) -> Result<CreditType, BondError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::BondCreditType(bond_id))
+            .ok_or(BondError::BondNotFound)
+    }
+
     pub fn claim_credits(
         env: Env,
         caller: Address,
@@ -268,6 +394,26 @@ impl CouponEngine {
         let key = DataKey::AccruedCredits(bond_id, caller.clone());
         let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &0i128);
+
+        if accrued > 0 {
+            let credit_type = env
+                .storage()
+                .instance()
+                .get(&DataKey::BondCreditType(bond_id));
+            match credit_type {
+                Some(CreditType::Carbon) | Some(CreditType::BlueCarbon) => {
+                    clear_accrued(&env, bond_id, &caller, CreditType::Carbon);
+                }
+                Some(CreditType::Biodiversity) => {
+                    clear_accrued(&env, bond_id, &caller, CreditType::Biodiversity);
+                }
+                Some(CreditType::Basket) => {
+                    clear_accrued(&env, bond_id, &caller, CreditType::Carbon);
+                    clear_accrued(&env, bond_id, &caller, CreditType::Biodiversity);
+                }
+                None => {}
+            }
+        }
 
         env.events().publish(
             (Symbol::new(&env, "credits_claimed"),),
@@ -356,6 +502,47 @@ fn set_nonce(env: &Env, addr: &Address, nonce: u64) {
         .set(&DataKey::Nonce(addr.clone()), &nonce);
 }
 
+fn compute_biodiversity_credits(metrics: &BiodiversityMetrics) -> i128 {
+    let (habitat, species, units) = match metrics {
+        BiodiversityMetrics::Absent => return 0,
+        BiodiversityMetrics::Present(v) => *v,
+    };
+    habitat
+        .saturating_mul(HABITAT_CREDIT_RATE)
+        .saturating_add(species.saturating_mul(SPECIES_CREDIT_RATE))
+        .saturating_add(units.saturating_mul(UNIT_CREDIT_RATE))
+        .saturating_div(HABITAT_CREDIT_RATE)
+}
+
+fn accrue_credits(
+    env: &Env,
+    bond_id: u64,
+    holder: Address,
+    credit_type: CreditType,
+    amount: i128,
+) -> Result<(), BondError> {
+    let by_type_key = DataKey::AccruedCreditsByType(bond_id, holder.clone(), credit_type);
+    let by_type: i128 = env.storage().persistent().get(&by_type_key).unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&by_type_key, &by_type.checked_add(amount).ok_or(BondError::Overflow)?);
+
+    let combined_key = DataKey::AccruedCredits(bond_id, holder);
+    let combined: i128 = env.storage().persistent().get(&combined_key).unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(
+            &combined_key,
+            &combined.checked_add(amount).ok_or(BondError::Overflow)?,
+        );
+    Ok(())
+}
+
+fn clear_accrued(env: &Env, bond_id: u64, holder: &Address, credit_type: CreditType) {
+    let key = DataKey::AccruedCreditsByType(bond_id, holder.clone(), credit_type);
+    env.storage().persistent().set(&key, &0i128);
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -383,6 +570,17 @@ mod test {
             credit_type: nbbs_shared::CreditType::Carbon,
             maturity_date: 3_000_000,
             total_supply: 10_000,
+        }
+    }
+
+    fn make_bond_config_with_type(
+        env: &Env,
+        project_id: &BytesN<32>,
+        credit_type: nbbs_shared::CreditType,
+    ) -> nbbs_shared::BondConfig {
+        nbbs_shared::BondConfig {
+            credit_type,
+            ..make_bond_config(env, project_id)
         }
     }
 
@@ -435,11 +633,27 @@ mod test {
         bond_id
     }
 
+    fn issue_and_subscribe_with_type(
+        env: &Env,
+        t: &TestEnv,
+        project_id: &BytesN<32>,
+        credit_type: nbbs_shared::CreditType,
+        holder: &Address,
+        amount: i128,
+    ) -> u64 {
+        let issuer = nbbs_bond_issuer::BondIssuerClient::new(env, &t.issuer_id);
+        let config = make_bond_config_with_type(env, project_id, credit_type);
+        let bond_id = issuer.issue_bond(&t.issuer_admin, &config, &0);
+        issuer.subscribe(holder, &bond_id, &amount, &0);
+        bond_id
+    }
+
     fn submit_verified_report(
         env: &Env,
         t: &TestEnv,
         project_id: &BytesN<32>,
         carbon: i128,
+        biodiversity: BiodiversityMetrics,
         admin_nonce: u64,
     ) -> u64 {
         let oc = nbbs_oracle_consumer::OracleConsumerClient::new(env, &t.oracle_id);
@@ -451,6 +665,7 @@ mod test {
             &1000u64,
             &2000u64,
             &carbon,
+            &biodiversity,
             &Symbol::new(env, "verra_vcs"),
             &make_ipfs_hash(env, 1),
             &0,
@@ -464,6 +679,7 @@ mod test {
         t: &TestEnv,
         project_id: &BytesN<32>,
         carbon: i128,
+        biodiversity: BiodiversityMetrics,
         admin_nonce: u64,
     ) -> u64 {
         let oc = nbbs_oracle_consumer::OracleConsumerClient::new(env, &t.oracle_id);
@@ -475,6 +691,7 @@ mod test {
             &1000u64,
             &2000u64,
             &carbon,
+            &biodiversity,
             &Symbol::new(env, "verra_vcs"),
             &make_ipfs_hash(env, 1),
             &0,
@@ -490,9 +707,14 @@ mod test {
         let t = deploy(env, admin.clone());
 
         let project_id = create_project_id(&t._env, 42);
-        t.client.register_bond(&t.admin, &1, &project_id, &0);
+        let holder = Address::generate(&t._env);
+        let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 1000);
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let count = t.client.get_period_count(&1);
+        let credit_type = t.client.get_bond_credit_type(&bond_id);
+        assert_eq!(credit_type, nbbs_shared::CreditType::Carbon);
+
+        let count = t.client.get_period_count(&bond_id);
         assert_eq!(count, 0);
     }
 
@@ -537,7 +759,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         let result = t.client.distribute_coupon(
@@ -565,6 +787,161 @@ mod test {
     }
 
     #[test]
+    fn test_distribute_biodiversity_bond() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 2);
+        let holder = Address::generate(&t._env);
+
+        let bond_id = issue_and_subscribe_with_type(
+            &t._env,
+            &t,
+            &project_id,
+            nbbs_shared::CreditType::Biodiversity,
+            &holder,
+            10_000,
+        );
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let credit_type = t.client.get_bond_credit_type(&bond_id);
+        assert_eq!(credit_type, nbbs_shared::CreditType::Biodiversity);
+
+        let report_id = submit_verified_report(
+            &t._env,
+            &t,
+            &project_id,
+            0,
+            BiodiversityMetrics::Present((500, 125, 1_000)),
+            0,
+        );
+        let holders = vec![&t._env, holder.clone()];
+
+        let result = t.client.distribute_coupon(
+            &t.admin,
+            &bond_id,
+            &0,
+            &holders,
+            &report_id,
+            &1,
+        );
+
+        let total = 500 + 125 * SPECIES_CREDIT_RATE / HABITAT_CREDIT_RATE + 1_000;
+        assert_eq!(result.total_credits, total);
+
+        let accrued = t.client.accrued_credits(&bond_id, &holder);
+        assert_eq!(accrued, total);
+        let by_type = t.client.accrued_credits_by_type(
+            &bond_id,
+            &holder,
+            &nbbs_shared::CreditType::Biodiversity,
+        );
+        assert_eq!(by_type, total);
+    }
+
+    #[test]
+    fn test_distribute_basket_bond_splits_by_type() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 3);
+        let holder = Address::generate(&t._env);
+
+        let bond_id = issue_and_subscribe_with_type(
+            &t._env,
+            &t,
+            &project_id,
+            nbbs_shared::CreditType::Basket,
+            &holder,
+            10_000,
+        );
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report(
+            &t._env,
+            &t,
+            &project_id,
+            100_000,
+            BiodiversityMetrics::Present((500, 125, 1_000)),
+            0,
+        );
+        let holders = vec![&t._env, holder.clone()];
+
+        let result = t.client.distribute_coupon(
+            &t.admin,
+            &bond_id,
+            &0,
+            &holders,
+            &report_id,
+            &1,
+        );
+
+        let bio_total = 500 + 125 * SPECIES_CREDIT_RATE / HABITAT_CREDIT_RATE + 1_000;
+        assert_eq!(result.total_credits, 100 + bio_total);
+
+        let carbon_accrued =
+            t.client.accrued_credits_by_type(&bond_id, &holder, &nbbs_shared::CreditType::Carbon);
+        assert_eq!(carbon_accrued, 100);
+        let bio_accrued = t.client.accrued_credits_by_type(
+            &bond_id,
+            &holder,
+            &nbbs_shared::CreditType::Biodiversity,
+        );
+        assert_eq!(bio_accrued, bio_total);
+
+        let combined = t.client.accrued_credits(&bond_id, &holder);
+        assert_eq!(combined, 100 + bio_total);
+    }
+
+    #[test]
+    fn test_distribute_biodiversity_bond_requires_metrics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let t = deploy(env, admin);
+
+        let project_id = create_project_id(&t._env, 4);
+        let holder = Address::generate(&t._env);
+
+        let bond_id = issue_and_subscribe_with_type(
+            &t._env,
+            &t,
+            &project_id,
+            nbbs_shared::CreditType::Biodiversity,
+            &holder,
+            10_000,
+        );
+        t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
+
+        let report_id = submit_verified_report(
+            &t._env,
+            &t,
+            &project_id,
+            0,
+            BiodiversityMetrics::Absent,
+            0,
+        );
+        let holders = vec![&t._env, holder.clone()];
+
+        let result = t.client.try_distribute_coupon(
+            &t.admin,
+            &bond_id,
+            &0,
+            &holders,
+            &report_id,
+            &1,
+        );
+        assert_eq!(result, Err(Ok(BondError::InvalidReport)));
+    }
+
+    #[test]
     fn test_distribute_pro_rata_multiple_holders() {
         let env = Env::default();
         env.mock_all_auths();
@@ -582,7 +959,7 @@ mod test {
 
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder1.clone(), holder2.clone()];
 
         let result = t.client.distribute_coupon(
@@ -621,7 +998,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 0, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 0, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         let result = t.client.distribute_coupon(
@@ -655,7 +1032,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_unverified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_unverified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         let result = t.client.try_distribute_coupon(
@@ -687,7 +1064,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &other_project, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &other_project, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         let result = t.client.try_distribute_coupon(
@@ -715,7 +1092,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         t.client.distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
@@ -740,7 +1117,7 @@ mod test {
         let t = deploy(env, admin);
 
         let project_id = create_project_id(&t._env, 1);
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env];
 
         let result = t.client.try_distribute_coupon(
@@ -768,7 +1145,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
         t.client.distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
 
@@ -793,7 +1170,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env];
 
         let result = t.client.distribute_coupon(
@@ -829,13 +1206,13 @@ mod test {
 
         assert_eq!(t.client.get_period_count(&bond_id), 0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
 
         t.client.distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
         assert_eq!(t.client.get_period_count(&bond_id), 1);
 
-        let report_id2 = submit_verified_report(&t._env, &t, &project_id, 200_000, 2);
+        let report_id2 = submit_verified_report(&t._env, &t, &project_id, 200_000, BiodiversityMetrics::Absent, 2);
         t.client.distribute_coupon(&t.admin, &bond_id, &1, &holders, &report_id2, &2);
         assert_eq!(t.client.get_period_count(&bond_id), 2);
     }
@@ -860,7 +1237,7 @@ mod test {
 
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder_a.clone(), holder_b.clone(), holder_c.clone()];
 
         let result = t.client.distribute_coupon(
@@ -898,7 +1275,7 @@ mod test {
         let bond_id = issue_and_subscribe(&t._env, &t, &project_id, &holder, 10_000);
         t.client.register_bond(&t.admin, &bond_id, &project_id, &0);
 
-        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, 0);
+        let report_id = submit_verified_report(&t._env, &t, &project_id, 100_000, BiodiversityMetrics::Absent, 0);
         let holders = vec![&t._env, holder.clone()];
         t.client.distribute_coupon(&t.admin, &bond_id, &0, &holders, &report_id, &1);
 
@@ -990,7 +1367,7 @@ mod test {
             let (t, holders, bond_id, total_subscribed) =
                 deploy_with_holders(env, admin, balances);
             let project_id = create_project_id(&t._env, 7);
-            let report_id = submit_verified_report(&t._env, &t, &project_id, carbon, 0);
+            let report_id = submit_verified_report(&t._env, &t, &project_id, carbon, BiodiversityMetrics::Absent, 0);
             (t, holders, bond_id, total_subscribed, report_id)
         }
 
@@ -1110,6 +1487,7 @@ mod test {
                         &t,
                         &create_project_id(&t._env, 7),
                         carbon,
+                        BiodiversityMetrics::Absent,
                         (period as u64) * 2,
                     );
                     t.client.distribute_coupon(

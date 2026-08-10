@@ -23,6 +23,8 @@ pub fn distribute_coupon(caller, bond_id, period, holders, report_id, nonce)
 pub fn claim_credits(caller, bond_id, nonce)   // withdraw accrued credits
 pub fn sweep_undistributed(caller, bond_id, nonce)  // admin-only dust recovery
 pub fn accrued_credits(...)
+pub fn accrued_credits_by_type(bond_id, holder, credit_type)  // per-type split for Basket bonds
+pub fn get_bond_credit_type(bond_id)
 pub fn get_period_info(...)
 pub fn get_period_count(...)
 pub fn get_undistributed_total(...)

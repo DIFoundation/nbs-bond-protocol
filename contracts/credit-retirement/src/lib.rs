@@ -252,7 +252,7 @@ mod test {
     };
     use nbbs_bond_issuer::{BondIssuer, BondIssuerClient};
     use nbbs_coupon_engine::{CouponEngine, CouponEngineClient};
-    use nbbs_shared::BondConfig;
+    use nbbs_shared::{BiodiversityMetrics, BondConfig};
 
     fn make_certificate_hash(env: &Env, value: u8) -> BytesN<32> {
         let mut arr = [0u8; 32];
@@ -288,6 +288,7 @@ mod test {
             &1000u64,
             &2000u64,
             &carbon,
+            &BiodiversityMetrics::Absent,
             &Symbol::new(env, "verra_vcs"),
             &make_certificate_hash(env, 9),
             &0,

@@ -13,6 +13,7 @@ pub enum BondError {
     ProjectNotApproved = 8,
     Overflow = 9,
     ReportNotVerified = 10,
+    InvalidReport = 11,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -68,6 +69,7 @@ pub enum CreditError {
     InvalidNonce = 5,
     NotAHolder = 6,
     InvalidCertificate = 7,
+    InvalidCreditType = 8,
 }
 
 #[derive(Clone, Debug, PartialEq)]

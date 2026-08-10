@@ -358,9 +358,18 @@ pub struct OracleReport {
     pub period_start: u64,
     pub period_end: u64,
     pub carbon_sequestered: i128,    // In kg CO2e
+    pub biodiversity: BiodiversityMetrics,
     pub methodology: Symbol,
     pub provider_signature: BytesN<64>,
     pub ipfs_evidence_hash: BytesN<32>,
+}
+
+// Optional biodiversity metrics attached to a report
+#[derive(Clone)]
+#[contracttype]
+pub enum BiodiversityMetrics {
+    Absent,
+    Present((i128, i128, i128)), // (habitat_area_ha, species_abundance, biodiversity_units)
 }
 
 // Distribute coupon for a given period (report referenced by on-chain report_id)
@@ -383,7 +392,21 @@ pub fn accrued_credits(
     bond_id: BondId,
     holder: Address,
 ) -> i128 { ... }
+
+// Query accrued credits for a bondholder, split by credit type
+pub fn accrued_credits_by_type(
+    env: Env,
+    bond_id: BondId,
+    holder: Address,
+    credit_type: CreditType,
+) -> i128 { ... }
 ```
+
+Credit allocation is **methodology-aware**: the credit type stored on the bond (`BondConfig.credit_type`, captured by `register_bond`) determines how raw report figures are converted into credits.
+
+- `Carbon` bonds: `credits = carbon_sequestered_kg / 1_000` (1 credit per tonne).
+- `Biodiversity` bonds: credits from habitat area, species abundance, and biodiversity units via per-methodology rates.
+- `Basket` bonds: a combined coupon where carbon and biodiversity credits are accrued **separately per type** (queryable via `accrued_credits_by_type`) while still reported as a combined total in `CouponResult`.
 
 ---
 
@@ -408,7 +431,13 @@ pub fn withdraw_stake(env: Env, provider: Address, amount: i128, nonce: u64) -> 
 pub fn submit_report(
     env: Env,
     provider: Address,
-    report: OracleReport,
+    project_id: BytesN<32>,
+    period_start: u64,
+    period_end: u64,
+    carbon_sequestered: i128,
+    biodiversity: BiodiversityMetrics,
+    methodology: Symbol,
+    ipfs_evidence_hash: BytesN<32>,
     nonce: u64,
 ) -> Result<ReportId, OracleError> { ... }
 

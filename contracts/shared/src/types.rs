@@ -15,6 +15,13 @@ pub mod methodology {
     pub const BLUE_CARBON: &str = "BLUE-CARBON";
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[contracttype]
+pub enum BiodiversityMetrics {
+    Absent,
+    Present((i128, i128, i128)),
+}
+
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct BondConfig {
