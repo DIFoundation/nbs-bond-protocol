@@ -19,6 +19,7 @@ export const METHODOLOGY = {
   VERRA_VCS: 'VERRA-VCS',
   REMOTE_SENSING: 'REMOTE-SENSING',
   IOT_SENSORS: 'IOT-SENSORS',
+  BLUE_CARBON: 'BLUE-CARBON',
 } as const;
 
 // ─────────────────────────── Verra registry ───────────────────────────
@@ -104,6 +105,34 @@ export const IotProjectConfigSchema = z.object({
 });
 export type IotProjectConfig = z.infer<typeof IotProjectConfigSchema>;
 
+// ─────────────────────────── Blue carbon ──────────────────────────
+
+/** Per-plot survey of a blue carbon ecosystem (mangrove/seagrass/saltmarsh). */
+export const BlueCarbonSurveySchema = z.object({
+  survey_id: z.string().min(1),
+  survey_date: isoDate,
+  habitat: z.enum(['mangrove', 'seagrass', 'saltmarsh']),
+  plot_area_ha: z.number().positive(),
+  aboveground_biomass_t_per_ha: z.number().nonnegative(),
+  belowground_biomass_t_per_ha: z.number().nonnegative(),
+  soil_organic_carbon_t_per_ha: z.number().nonnegative(),
+  bulk_density_g_cm3: z.number().positive().optional(),
+});
+export type BlueCarbonSurvey = z.infer<typeof BlueCarbonSurveySchema>;
+
+export const BlueCarbonSurveyListSchema = z.object({
+  surveys: z.array(BlueCarbonSurveySchema),
+});
+
+export const BlueCarbonProjectConfigSchema = z.object({
+  project_id: z.string().min(1),
+  habitat: z.enum(['mangrove', 'seagrass', 'saltmarsh']),
+  area_ha: z.number().positive(),
+  baseline_carbon_t_per_ha: z.number().nonnegative(),
+  root_shoot_ratio: z.number().positive().default(1.0),
+});
+export type BlueCarbonProjectConfig = z.infer<typeof BlueCarbonProjectConfigSchema>;
+
 // ──────────────────────────────── Output ──────────────────────────────
 
 /**
@@ -130,5 +159,7 @@ export type ReportEvidence = {
   satellite_scene_count?: number;
   sensor_sample_count?: number;
   sensor_device_count?: number;
+  blue_carbon_survey_count?: number;
+  blue_carbon_habitat?: string;
   [key: string]: unknown;
 };

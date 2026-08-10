@@ -3,6 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { OracleService } from './oracle.service';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
+import { BlueCarbonProvider } from './providers/blue-carbon.provider';
 
 @Injectable()
 export class OracleScheduler {
@@ -12,6 +13,7 @@ export class OracleScheduler {
     private readonly oracleService: OracleService,
     private readonly verraProvider: VerraProvider,
     private readonly satelliteProvider: SatelliteProvider,
+    private readonly blueCarbonProvider: BlueCarbonProvider,
   ) {}
 
   @Cron(CronExpression.EVERY_5_MINUTES)
@@ -19,7 +21,11 @@ export class OracleScheduler {
     this.logger.log('Oracle poll cycle started');
 
     try {
-      const providers = [this.verraProvider, this.satelliteProvider];
+      const providers = [
+        this.verraProvider,
+        this.satelliteProvider,
+        this.blueCarbonProvider,
+      ];
 
       for (const provider of providers) {
         this.logger.log(`Polling provider: ${provider.name}`);

@@ -62,6 +62,15 @@ import { ApiService } from '../../shared/services/api.service';
 
         <div class="form-row">
           <div class="form-group">
+            <label class="form-label" for="blueCarbon">
+              <input id="blueCarbon" type="checkbox" class="form-checkbox" formControlName="blueCarbon" />
+              Blue Carbon Project (mangrove / seagrass / saltmarsh)
+            </label>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
             <label class="form-label" for="locationLat">Latitude</label>
             <input id="locationLat" type="number" step="0.000001" class="form-input" formControlName="locationLat" placeholder="-3.4653" />
             @if (form.get('locationLat')?.invalid && form.get('locationLat')?.touched) {
@@ -98,6 +107,7 @@ import { ApiService } from '../../shared/services/api.service';
     .form-input { padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 0.875rem; outline: none; transition: border-color 0.15s; }
     .form-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
     .form-error { font-size: 0.75rem; color: #ef4444; margin-top: 4px; }
+    .form-checkbox { width: 16px; height: 16px; margin-right: 8px; accent-color: #1a1a2e; }
     .form-row { display: flex; gap: 16px; }
     .form-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
     .btn { padding: 10px 20px; border-radius: 8px; font-size: 0.875rem; font-weight: 500; cursor: pointer; border: none; text-decoration: none; display: inline-block; }
@@ -123,6 +133,7 @@ export class ProjectCreateComponent {
     country: ['', Validators.required],
     totalAreaHa: [null, [Validators.required, Validators.min(0.01)]],
     carbonSequestrationEstimate: [null, [Validators.required, Validators.min(0.01)]],
+    blueCarbon: [false],
     locationLat: [null, Validators.required],
     locationLng: [null, Validators.required],
   });

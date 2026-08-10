@@ -6,6 +6,7 @@ import { OracleService } from './oracle.service';
 import { OracleScheduler } from './oracle.scheduler';
 import { VerraProvider } from './providers/verra.provider';
 import { SatelliteProvider } from './providers/satellite.provider';
+import { BlueCarbonProvider } from './providers/blue-carbon.provider';
 
 @Module({
   imports: [ScheduleModule.forRoot(), ProjectsModule],
@@ -15,6 +16,7 @@ import { SatelliteProvider } from './providers/satellite.provider';
     OracleScheduler,
     VerraProvider,
     SatelliteProvider,
+    BlueCarbonProvider,
   ],
   exports: [OracleService],
 })

@@ -481,6 +481,7 @@ The integrity of this protocol depends entirely on the quality and trustworthine
 | Accredited Auditors (Verra, Gold Standard) | Third-party verification | Annual | Baseline & periodic verification |
 | Satellite Imagery (Sentinel-2, Landsat) | Remote sensing | Monthly | NDVI, biomass proxy, deforestation alerts |
 | IoT Sensors | In-situ measurement | Continuous | Soil carbon, water table, microclimate |
+| Blue Carbon Surveys | Plot-level measurement | Seasonal | Mangrove/seagrass/saltmarsh biomass & soil carbon |
 | Community Monitors | Ground truth | Quarterly | Species surveys, canopy cover |
 
 ### Oracle Security Model
@@ -515,8 +516,9 @@ The standalone adapters in `oracle/` poll real upstream endpoints, validate ever
 | Verra registry | `oracle/verra-adapter.ts` | `VERRA_REGISTRY_URL` (Verra-compatible VCS registry) | `VERRA-VCS` | `VerraProjectSchema`, `VerraMonitoringReportSchema` |
 | Satellite | `oracle/satellite-processor.ts` | `SATELLITE_API_URL` (Sentinel-2 / Landsat NDVI stats) | `REMOTE-SENSING` | `SatelliteSceneSchema`, `SatelliteProjectConfigSchema` |
 | IoT | `oracle/iot-aggregator.ts` | `IOT_API_URL` (in-situ soil sensors) | `IOT-SENSORS` | `IoTSensorReadingSchema`, `IotProjectConfigSchema` |
+| Blue carbon | `oracle/blue-carbon-adapter.ts` | `BLUE_CARBON_API_URL` (mangrove/seagrass/saltmarsh plot surveys) | `BLUE-CARBON` | `BlueCarbonSurveySchema`, `BlueCarbonProjectConfigSchema` |
 
-All three validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned.
+All four validate their inputs **before** producing a report; a response that violates its schema raises a typed error (`VerraSchemaError`, `SatelliteSchemaError`, `IotSchemaError`, `BlueCarbonSchemaError`) and no report is emitted. The output of every adapter is validated against `OracleReportSchema` (see `ipfs/schemas/oracle-report.schema.json`) before it is returned.
 
 ### Report format
 
@@ -547,7 +549,8 @@ npm install
 npm run ingest:verra       # poll Verra registry fixture → OracleReport
 npm run ingest:satellite   # ingest NDVI scenes fixture → OracleReport
 npm run ingest:iot         # aggregate sensor readings fixture → OracleReport
-npm run ingest             # run all three adapters
+npm run ingest:blue-carbon # aggregate blue carbon surveys fixture → OracleReport
+npm run ingest             # run all four adapters
 ```
 
 Unit tests mock the upstream HTTP surface (`oracle/test-helpers.ts`) and cover success and error paths (schema violations, 404/500 responses, empty periods, missing credentials):
@@ -558,13 +561,14 @@ npm test                   # jest
 npm run typecheck          # tsc --noEmit
 ```
 
-To point an adapter at a live registry instead, set the matching environment variable (`VERRA_REGISTRY_URL`, `SATELLITE_API_URL`, `IOT_API_URL`) and call the exported ingest function, e.g. `pollVerraProject('VCS-1234', { periodStart: '2025-01-01', periodEnd: '2025-03-31' })`.
+To point an adapter at a live registry instead, set the matching environment variable (`VERRA_REGISTRY_URL`, `SATELLITE_API_URL`, `IOT_API_URL`, `BLUE_CARBON_API_URL`) and call the exported ingest function, e.g. `pollVerraProject('VCS-1234', { periodStart: '2025-01-01', periodEnd: '2025-03-31' })`.
 
 ### Measurement models
 
 - **Verra** — sums `carbon_sequestered_kg` across reports whose `verification_status === 'VERIFIED'` and whose reporting period falls inside the requested window.
 - **Satellite** — averages NDVI over scenes with cloud cover ≤ 20%, converts the change from `baseline_ndvi` into kg CO2e using a simplified IPCC Tier 1 factor (`area_ha × ndvi_change × 3.67 tC/ha × 44/12`). The factor is a methodology placeholder and must be tuned per project.
 - **IoT** — validates each reading, aggregates soil moisture/temperature/humidity/water table, and estimates sequestration from the per-device mean change in soil organic carbon (ppm) over the period: `Δppm × area_ha × 15.4 kg CO2e·ha⁻¹·ppm⁻¹` (assumes 1.4 t/m³ bulk density, 0.3 m sampling depth). Devices without a start/end reading contribute no delta.
+- **Blue carbon** — aggregates seasonal plot surveys and estimates net sequestration from the change in mean carbon stock (aboveground biomass + belowground biomass via the project's root-to-shoot ratio + soil organic carbon) against the project baseline: `Δstock_t·ha⁻¹ × area_ha × 44/12 × 1000 kg CO2e`. Periods where the stock falls below baseline contribute zero credits.
 
 ---
 
@@ -584,6 +588,12 @@ Emerging credit type representing measurable biodiversity outcomes. Units vary b
 - Habitat hectares restored
 - Species Abundance Index (SAI) improvement
 - Biodiversity Unit (UK BNG methodology)
+
+### Blue Carbon Credits
+
+Credits from coastal and marine ecosystems — mangroves, seagrass beds and saltmarshes — that sequester carbon at 3–5x the rate of terrestrial forests. Units are tCO₂e measured against a project baseline carbon stock via plot-level biomass and soil carbon surveys (see [Credit Methodology](./docs/credit-methodology.md)). Compatible with:
+- Verra VM0033 (Tidal Wetland and Seagrass Restoration)
+- Blue Carbon Initiative methodologies
 
 ### Basket Credits
 
@@ -1035,7 +1045,7 @@ NbS Bond Protocol takes a pragmatic approach to compliance:
 | **Phase 4** | Stellar DEX secondary market integration (escrowed settlement via `DEXRouter`) | ✅ Delivered |
 | **Phase 5** | Third-party smart contract audit | 📋 Not started |
 | **Phase 6** | Mainnet launch with pilot reforestation bond | 📋 Not started — `deploy-mainnet.sh` scaffolded |
-| **Phase 7** | Blue carbon bond support | 🔭 Future |
+| **Phase 7** | Blue carbon bond support | ✅ Delivered — `CreditType::BlueCarbon`, `BLUE-CARBON` oracle adapter, methodology docs |
 | **Phase 8** | Biodiversity credit coupon support | 🔭 Future (partial — `CreditType::Biodiversity` supported) |
 | **Phase 9** | Governance token & DAO transition | 🔭 Future (governance documented, multi-sig not on-chain) |
 | **Phase 10** | Multi-chain bridge for credit portability | 🔭 Future |

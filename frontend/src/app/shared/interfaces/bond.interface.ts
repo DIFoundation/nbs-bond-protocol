@@ -3,7 +3,7 @@ export interface Bond {
   projectId: string;
   faceValue: number;
   couponSchedule: number[];
-  creditType: 'Carbon' | 'Biodiversity' | 'Basket';
+  creditType: 'Carbon' | 'Biodiversity' | 'Basket' | 'BlueCarbon';
   maturityDate: number;
   maturityStatus: 'Active' | 'Matured';
   totalSupply: number;
@@ -82,6 +82,8 @@ export interface CreateProjectDto {
   country: string;
   totalAreaHa: number;
   carbonSequestrationEstimate: number;
+  blueCarbon?: boolean;
+  biodiversityCorridor?: boolean;
   metadataIpfsHash?: string;
   nonce?: number;
 }

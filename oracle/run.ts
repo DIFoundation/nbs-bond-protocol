@@ -27,6 +27,8 @@ export class FileHttpClient implements HttpClient {
       filename = 'satellite-ndvi.json';
     } else if (url.includes('/readings')) {
       filename = 'iot-readings.json';
+    } else if (url.includes('/surveys')) {
+      filename = 'blue-carbon-surveys.json';
     } else if (match[1] === 'monitoring-reports') {
       filename = 'verra-monitoring-reports.json';
     } else {
@@ -58,6 +60,9 @@ import {
 import {
   aggregateIotProject,
 } from './iot-aggregator';
+import {
+  aggregateBlueCarbonProject,
+} from './blue-carbon-adapter';
 
 const FILE_URL = 'file://fixtures';
 
@@ -97,7 +102,27 @@ async function runIot(): Promise<void> {
   console.log(JSON.stringify(report, null, 2));
 }
 
-const ADAPTERS = { verra: runVerra, satellite: runSatellite, iot: runIot } as const;
+async function runBlueCarbon(): Promise<void> {
+  const report = await aggregateBlueCarbonProject(
+    {
+      project_id: 'BLUE-2024-001',
+      habitat: 'mangrove',
+      area_ha: 500,
+      baseline_carbon_t_per_ha: 480,
+      root_shoot_ratio: 0.8,
+    },
+    { periodStart: '2025-01-01', periodEnd: '2025-03-31' },
+    { baseUrl: FILE_URL, http: new FileHttpClient() },
+  );
+  console.log(JSON.stringify(report, null, 2));
+}
+
+const ADAPTERS = {
+  verra: runVerra,
+  satellite: runSatellite,
+  iot: runIot,
+  'blue-carbon': runBlueCarbon,
+} as const;
 
 async function main(): Promise<void> {
   const target = process.argv[2] ?? 'all';

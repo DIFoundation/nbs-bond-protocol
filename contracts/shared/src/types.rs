@@ -6,6 +6,13 @@ pub enum CreditType {
     Carbon,
     Biodiversity,
     Basket,
+    BlueCarbon,
+}
+
+/// Canonical oracle methodology symbols for the registered providers.
+pub mod methodology {
+    /// Blue carbon (mangrove, seagrass, saltmarsh) monitoring.
+    pub const BLUE_CARBON: &str = "BLUE-CARBON";
 }
 
 #[derive(Clone, Debug)]

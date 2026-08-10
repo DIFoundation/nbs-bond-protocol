@@ -2,6 +2,7 @@ export enum CreditTypeEnum {
   Carbon = 'Carbon',
   Biodiversity = 'Biodiversity',
   Basket = 'Basket',
+  BlueCarbon = 'BlueCarbon',
 }
 
 export enum BondStatusEnum {

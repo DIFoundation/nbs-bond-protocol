@@ -43,6 +43,7 @@ import { ApiService } from '../../shared/services/api.service';
               <option value="Carbon">Carbon</option>
               <option value="Biodiversity">Biodiversity</option>
               <option value="Basket">Basket</option>
+              <option value="BlueCarbon">Blue Carbon</option>
             </select>
           </div>
         </div>
