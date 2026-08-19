@@ -3,6 +3,12 @@
 use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Vec};
 use nbbs_shared::DEXError;
 
+// Persistent-storage TTL constants (in ledgers).
+// MIN_TTL  ≈  1 day   at 5-second ledger cadence (~17 280 ledgers).
+// MAX_TTL  ≈ 120 days at 5-second ledger cadence (~2 073 600 ledgers).
+const PERSISTENT_TTL_THRESHOLD: u32 = 17_280;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 2_073_600;
+
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -53,30 +59,39 @@ fn require_admin(env: &Env, caller: &Address) -> Result<(), DEXError> {
     Ok(())
 }
 
+/// Bump a persistent storage entry's TTL if it is below the threshold.
+fn bump_persistent<K: soroban_sdk::TryIntoVal<Env, soroban_sdk::Val> + soroban_sdk::IntoVal<Env, soroban_sdk::Val>>(env: &Env, key: &K) {
+    env.storage().persistent().extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
 fn get_nonce(env: &Env, addr: &Address) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Nonce(addr.clone()))
-        .unwrap_or(0)
+    let key = DataKey::Nonce(addr.clone());
+    let val: u64 = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    val
 }
 
 fn set_nonce(env: &Env, addr: &Address, nonce: u64) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::Nonce(addr.clone()), &nonce);
+    let key = DataKey::Nonce(addr.clone());
+    env.storage().persistent().set(&key, &nonce);
+    bump_persistent(env, &key);
 }
 
 fn get_balance(env: &Env, addr: &Address, asset: &Symbol) -> i128 {
-    env.storage()
-        .persistent()
-        .get(&DataKey::Balance(asset.clone(), addr.clone()))
-        .unwrap_or(0)
+    let key = DataKey::Balance(asset.clone(), addr.clone());
+    let val = env.storage().persistent().get(&key).unwrap_or(0);
+    if env.storage().persistent().has(&key) {
+        bump_persistent(env, &key);
+    }
+    val
 }
 
 fn set_balance(env: &Env, addr: &Address, asset: &Symbol, amount: i128) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::Balance(asset.clone(), addr.clone()), &amount);
+    let key = DataKey::Balance(asset.clone(), addr.clone());
+    env.storage().persistent().set(&key, &amount);
+    bump_persistent(env, &key);
 }
 
 fn is_order_expired(env: &Env, order: &Order) -> bool {
@@ -186,29 +201,29 @@ impl DEXRouter {
             expires_at,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
+        let order_key = DataKey::Order(order_id);
+        env.storage().persistent().set(&order_key, &order);
+        bump_persistent(&env, &order_key);
 
+        let so_key = DataKey::SellerOrders(seller.clone());
         let mut seller_orders: Vec<u64> = env
             .storage()
-            .instance()
-            .get(&DataKey::SellerOrders(seller.clone()))
+            .persistent()
+            .get(&so_key)
             .unwrap_or(vec![&env]);
         seller_orders.push_back(order_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::SellerOrders(seller.clone()), &seller_orders);
+        env.storage().persistent().set(&so_key, &seller_orders);
+        bump_persistent(&env, &so_key);
 
+        let bo_key = DataKey::BondOrders(bond_id);
         let mut bond_orders: Vec<u64> = env
             .storage()
-            .instance()
-            .get(&DataKey::BondOrders(bond_id))
+            .persistent()
+            .get(&bo_key)
             .unwrap_or(vec![&env]);
         bond_orders.push_back(order_id);
-        env.storage()
-            .instance()
-            .set(&DataKey::BondOrders(bond_id), &bond_orders);
+        env.storage().persistent().set(&bo_key, &bond_orders);
+        bump_persistent(&env, &bo_key);
 
         env.events().publish(
             (Symbol::new(&env, "order_listed"),),
@@ -232,10 +247,11 @@ impl DEXRouter {
         }
         set_nonce(&env, &caller, expected_nonce + 1);
 
+        let order_key = DataKey::Order(order_id);
         let mut order: Order = env
             .storage()
-            .instance()
-            .get(&DataKey::Order(order_id))
+            .persistent()
+            .get(&order_key)
             .ok_or(DEXError::OrderNotFound)?;
 
         if caller != order.seller {
@@ -249,9 +265,8 @@ impl DEXRouter {
         }
 
         order.status = OrderStatus::Cancelled;
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
+        env.storage().persistent().set(&order_key, &order);
+        bump_persistent(&env, &order_key);
 
         env.events().publish(
             (Symbol::new(&env, "order_cancelled"),),
@@ -277,11 +292,13 @@ impl DEXRouter {
         }
         set_nonce(&env, &buyer, expected_nonce + 1);
 
+        let order_key = DataKey::Order(order_id);
         let mut order: Order = env
             .storage()
-            .instance()
-            .get(&DataKey::Order(order_id))
+            .persistent()
+            .get(&order_key)
             .ok_or(DEXError::OrderNotFound)?;
+        bump_persistent(&env, &order_key);
 
         if order.status != OrderStatus::Open
             && order.status != OrderStatus::PartiallyFilled
@@ -309,13 +326,6 @@ impl DEXRouter {
             return Err(DEXError::InsufficientBalance);
         }
 
-        // Holder balance is verified at listing time, so a seller can list
-        // tokens and transfer them away before the order fills. Re-check at
-        // execution time: the seller must still hold `amount` bond tokens for
-        // the fill to succeed. Because the whole purchase runs in a single
-        // atomic frame this re-check is race-free, and on failure the escrow
-        // bookkeeping below is rolled back with the frame — the buyer's quote
-        // balance is never debited.
         if verify_holder_balance(&env, &order.seller, order.bond_id, amount).is_err() {
             env.events().publish(
                 (Symbol::new(&env, "purchase_failed"),),
@@ -369,9 +379,8 @@ impl DEXRouter {
             order.amount -= amount;
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Order(order_id), &order);
+        env.storage().persistent().set(&order_key, &order);
+        bump_persistent(&env, &order_key);
 
         env.events().publish(
             (Symbol::new(&env, "order_filled"),),
@@ -457,24 +466,28 @@ impl DEXRouter {
     }
 
     pub fn get_order(env: Env, order_id: u64) -> Result<Order, DEXError> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Order(order_id))
-            .ok_or(DEXError::OrderNotFound)
+        let key = DataKey::Order(order_id);
+        let val = env.storage().persistent().get(&key).ok_or(DEXError::OrderNotFound)?;
+        bump_persistent(&env, &key);
+        Ok(val)
     }
 
     pub fn get_bond_orders(env: Env, bond_id: u64) -> Vec<u64> {
-        env.storage()
-            .instance()
-            .get(&DataKey::BondOrders(bond_id))
-            .unwrap_or(vec![&env])
+        let key = DataKey::BondOrders(bond_id);
+        let val: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(vec![&env]);
+        if env.storage().persistent().has(&key) {
+            bump_persistent(&env, &key);
+        }
+        val
     }
 
     pub fn get_seller_orders(env: Env, seller: Address) -> Vec<u64> {
-        env.storage()
-            .instance()
-            .get(&DataKey::SellerOrders(seller))
-            .unwrap_or(vec![&env])
+        let key = DataKey::SellerOrders(seller);
+        let val: Vec<u64> = env.storage().persistent().get(&key).unwrap_or(vec![&env]);
+        if env.storage().persistent().has(&key) {
+            bump_persistent(&env, &key);
+        }
+        val
     }
 
     pub fn order_count(env: Env) -> u64 {
@@ -508,13 +521,14 @@ impl DEXRouter {
         let mut cleaned: u32 = 0;
         for id in 1..=count {
             let key = DataKey::Order(id);
-            if let Some(mut order) = env.storage().instance().get::<DataKey, Order>(&key) {
+            if let Some(mut order) = env.storage().persistent().get::<DataKey, Order>(&key) {
                 if (order.status == OrderStatus::Open
                     || order.status == OrderStatus::PartiallyFilled)
                     && is_order_expired(&env, &order)
                 {
                     order.status = OrderStatus::Expired;
-                    env.storage().instance().set(&key, &order);
+                    env.storage().persistent().set(&key, &order);
+                    bump_persistent(&env, &key);
                     cleaned += 1;
                 }
             }
@@ -1525,6 +1539,69 @@ mod test {
                     prop_assert_eq!(client.get_quote_balance(&user, &quote), balance);
                 }
             }
+        }
+    }
+
+    // ── TTL / persistent-storage stress tests ────────────────────────────────
+
+    /// Create 200 orders for the same seller and verify `get_seller_orders`
+    /// returns the complete set.  This exercises the persistent `SellerOrders`
+    /// index across many appends and confirms the contract does not hit an
+    /// instance-storage size cap.
+    #[test]
+    fn test_seller_orders_200_stress() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let order_count: u64 = 200;
+        // Bond supply must cover all listings.
+        let supply: i128 = order_count as i128 * 10;
+        let (_issuer_admin, issuer_id, bond_id, seller) =
+            setup_bond_and_holder(&env, supply, supply);
+
+        let contract_id = env.register(
+            DEXRouter,
+            (admin.clone(), issuer_id.clone(), Address::generate(&env)),
+        );
+        let client = DEXRouterClient::new(&env, &contract_id);
+
+        env.ledger().set_timestamp(1_000_000);
+
+        for i in 0..order_count {
+            client.list_bond_tokens(
+                &seller,
+                &bond_id,
+                &10i128,
+                &1i128,
+                &Symbol::new(&env, "USDC"),
+                &3_600_000u64, // long expiry so none expire during the loop
+                &i,
+            );
+        }
+
+        assert_eq!(client.order_count(), order_count);
+
+        let seller_orders = client.get_seller_orders(&seller);
+        assert_eq!(
+            seller_orders.len() as u64,
+            order_count,
+            "expected {order_count} seller orders, got {}",
+            seller_orders.len()
+        );
+
+        // Spot-check first and last.
+        assert_eq!(seller_orders.get(0).unwrap(), 1u64);
+        assert_eq!(seller_orders.get((order_count - 1) as u32).unwrap(), order_count);
+
+        // Every order must be individually retrievable and belong to this bond.
+        let bond_orders = client.get_bond_orders(&bond_id);
+        assert_eq!(bond_orders.len() as u64, order_count);
+        for id in 1..=order_count {
+            let o = client.get_order(&id);
+            assert_eq!(o.seller, seller);
+            assert_eq!(o.bond_id, bond_id);
+            assert_eq!(o.status, OrderStatus::Open);
         }
     }
 }
