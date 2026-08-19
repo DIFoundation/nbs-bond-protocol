@@ -1,5 +1,18 @@
 import { Injectable, Logger } from '@nestjs/common';
 
+export class IpfsTimeoutError extends Error {
+  constructor(
+    operation: string,
+    url: string,
+    timeoutMs: number,
+  ) {
+    super(
+      `IPFS ${operation} timed out after ${timeoutMs}ms for URL: ${url}`,
+    );
+    this.name = 'IpfsTimeoutError';
+  }
+}
+
 interface IpfsUploadResult {
   hash: string;
   gatewayUrl: string;
@@ -30,11 +43,45 @@ export class IpfsService {
     requirePinning:
       process.env.NODE_ENV === 'production' ||
       process.env.REQUIRE_IPFS_PINNING === 'true',
+    uploadTimeoutMs: Number(process.env.IPFS_UPLOAD_TIMEOUT_MS) || 30_000,
+    pinTimeoutMs: Number(process.env.IPFS_PIN_TIMEOUT_MS) || 60_000,
+    readTimeoutMs: Number(process.env.IPFS_READ_TIMEOUT_MS) || 10_000,
   };
 
+  private async fetchWithTimeout(
+    operation: string,
+    url: string,
+    timeoutMs: number,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+      return response;
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        this.logger.error(
+          `IPFS ${operation} timed out after ${timeoutMs}ms for URL: ${url}`,
+        );
+        throw new IpfsTimeoutError(operation, url, timeoutMs);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async uploadJson(data: Record<string, unknown>): Promise<IpfsUploadResult> {
-    const response = await fetch(
-      `${this.config.apiUrl}/pinning/pinJSONToIPFS`,
+    const url = `${this.config.apiUrl}/pinning/pinJSONToIPFS`;
+    const response = await this.fetchWithTimeout(
+      'uploadJson',
+      url,
+      this.config.uploadTimeoutMs,
       {
         method: 'POST',
         headers: {
@@ -79,8 +126,11 @@ export class IpfsService {
     );
     formData.append('pinataOptions', JSON.stringify({ cidVersion: 0 }));
 
-    const response = await fetch(
-      `${this.config.apiUrl}/pinning/pinFileToIPFS`,
+    const url = `${this.config.apiUrl}/pinning/pinFileToIPFS`;
+    const response = await this.fetchWithTimeout(
+      'uploadFile',
+      url,
+      this.config.uploadTimeoutMs,
       {
         method: 'POST',
         headers: {
@@ -100,7 +150,12 @@ export class IpfsService {
   }
 
   async getContent(hash: string): Promise<Record<string, unknown>> {
-    const response = await fetch(`${this.config.gateway}${hash}`);
+    const url = `${this.config.gateway}${hash}`;
+    const response = await this.fetchWithTimeout(
+      'getContent',
+      url,
+      this.config.readTimeoutMs,
+    );
     if (!response.ok) {
       throw new Error(`Failed to fetch IPFS content: ${response.statusText}`);
     }
@@ -108,8 +163,11 @@ export class IpfsService {
   }
 
   async pin(hash: string): Promise<void> {
-    const response = await fetch(
-      `${this.config.apiUrl}/pinning/pinByHash`,
+    const url = `${this.config.apiUrl}/pinning/pinByHash`;
+    const response = await this.fetchWithTimeout(
+      'pin',
+      url,
+      this.config.pinTimeoutMs,
       {
         method: 'POST',
         headers: {
@@ -130,8 +188,11 @@ export class IpfsService {
     buffer: Buffer,
     filename: string,
   ): Promise<IpfsUploadResult> {
-    const response = await fetch(
-      `${this.config.localApiUrl}/add?cid-version=0&pin=true`,
+    const url = `${this.config.localApiUrl}/add?cid-version=0&pin=true`;
+    const response = await this.fetchWithTimeout(
+      'uploadFileToLocalNode',
+      url,
+      this.config.uploadTimeoutMs,
       {
         method: 'POST',
         body: this.createFileFormData(buffer, filename),

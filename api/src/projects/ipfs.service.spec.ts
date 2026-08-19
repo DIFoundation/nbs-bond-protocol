@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { IpfsService } from './ipfs.service';
+import { IpfsService, IpfsTimeoutError } from './ipfs.service';
 
 const CID_V0 = `Qm${'a'.repeat(44)}`;
 
@@ -145,5 +145,117 @@ describe('IpfsService uploadFile', () => {
     await expect(
       service.uploadFile(Buffer.from('document'), 'document.pdf'),
     ).rejects.toThrow('IPFS upload returned an invalid CIDv0 hash');
+  });
+});
+
+describe('IpfsService timeout', () => {
+  const originalEnv = process.env;
+  const originalFetch = global.fetch;
+  let fetchMock: jest.MockedFunction<typeof fetch>;
+
+  beforeEach(() => {
+    process.env = {
+      ...originalEnv,
+      NODE_ENV: 'test',
+      IPFS_API_URL: 'https://api.pinata.test',
+      IPFS_API_KEY: 'api-key',
+      IPFS_SECRET_KEY: 'secret-key',
+      IPFS_GATEWAY: 'https://gateway.test/ipfs/',
+      IPFS_LOCAL_API_URL: 'http://localhost:5001/api/v0',
+      IPFS_UPLOAD_TIMEOUT_MS: '50',
+      IPFS_PIN_TIMEOUT_MS: '50',
+      IPFS_READ_TIMEOUT_MS: '50',
+    };
+    delete process.env.REQUIRE_IPFS_PINNING;
+    fetchMock = jest.fn();
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  const hangForever = (_url: string | URL | Request, init?: RequestInit) =>
+    new Promise<never>((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      if (signal) {
+        if (signal.aborted) {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+          return;
+        }
+        signal.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        });
+      }
+    });
+
+  it('throws IpfsTimeoutError when uploadJson hangs', async () => {
+    fetchMock.mockImplementation(hangForever);
+    const service = new IpfsService();
+
+    await expect(
+      service.uploadJson({ key: 'value' }),
+    ).rejects.toThrow(IpfsTimeoutError);
+    await expect(
+      service.uploadJson({ key: 'value' }),
+    ).rejects.toThrow('IPFS uploadJson timed out');
+  });
+
+  it('throws IpfsTimeoutError when uploadFile hangs', async () => {
+    fetchMock.mockImplementation(hangForever);
+    const service = new IpfsService();
+
+    await expect(
+      service.uploadFile(Buffer.from('doc'), 'doc.pdf'),
+    ).rejects.toThrow(IpfsTimeoutError);
+  });
+
+  it('throws IpfsTimeoutError when getContent hangs', async () => {
+    fetchMock.mockImplementation(hangForever);
+    const service = new IpfsService();
+
+    await expect(service.getContent(CID_V0)).rejects.toThrow(IpfsTimeoutError);
+    await expect(service.getContent(CID_V0)).rejects.toThrow(
+      'IPFS getContent timed out',
+    );
+  });
+
+  it('throws IpfsTimeoutError when pin hangs', async () => {
+    fetchMock.mockImplementation(hangForever);
+    const service = new IpfsService();
+
+    await expect(service.pin(CID_V0)).rejects.toThrow(IpfsTimeoutError);
+    await expect(service.pin(CID_V0)).rejects.toThrow('IPFS pin timed out');
+  });
+
+  it('logs the operation and URL on timeout', async () => {
+    fetchMock.mockImplementation(hangForever);
+    const errorSpy = jest.spyOn(Logger.prototype, 'error');
+    const service = new IpfsService();
+
+    await expect(service.pin(CID_V0)).rejects.toThrow();
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('IPFS pin timed out'),
+    );
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.pinata.test/pinning/pinByHash'),
+    );
+  });
+
+  it('passes through non-timeout fetch errors', async () => {
+    fetchMock.mockRejectedValue(new Error('network failure'));
+    const service = new IpfsService();
+
+    try {
+      await service.pin(CID_V0);
+      fail('expected pin to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toBe('network failure');
+      expect(error).not.toBeInstanceOf(IpfsTimeoutError);
+    }
   });
 });
