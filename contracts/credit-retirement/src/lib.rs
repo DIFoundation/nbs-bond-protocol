@@ -141,6 +141,26 @@ pub fn year_from_timestamp(timestamp: u64) -> u32 {
     year as u32
 }
 
+/// Check whether a caller-supplied credit type is compatible with the bond's
+/// registered type. Carbon and BlueCarbon share the same underlying storage
+/// (CouponsEngine accrues both as Carbon), so either is valid for a
+/// Carbon-or-BlueCarbon bond. Basket bonds accrue Carbon and Biodiversity
+/// separately, so both are accepted.
+fn is_compatible_credit_type(bond_type: CreditType, supplied: CreditType) -> bool {
+    match bond_type {
+        CreditType::Carbon | CreditType::BlueCarbon => {
+            matches!(supplied, CreditType::Carbon | CreditType::BlueCarbon)
+        }
+        CreditType::Biodiversity => supplied == CreditType::Biodiversity,
+        CreditType::Basket => {
+            matches!(
+                supplied,
+                CreditType::Carbon | CreditType::BlueCarbon | CreditType::Biodiversity
+            )
+        }
+    }
+}
+
 fn certificate_from_record(record: &RetirementRecord) -> RetirementCertificate {
     RetirementCertificate {
         record_id: record.id,
@@ -241,6 +261,10 @@ impl CreditRetirement {
         );
         if config.project_id != project_id {
             return Err(CreditError::ProjectMismatch);
+        }
+
+        if !is_compatible_credit_type(config.credit_type, credit_type) {
+            return Err(CreditError::InvalidCreditType);
         }
 
         let coupon_engine: Address = env
@@ -1234,5 +1258,45 @@ mod test {
         let claimed = s.ce_client.claim_credits(&s.holder, &s.bond_id, &0);
         assert_eq!(claimed, s.accrued - half);
         assert_eq!(s.ce_client.accrued_credits(&s.bond_id, &s.holder), 0);
+    }
+
+    #[test]
+    fn test_retire_wrong_credit_type_rejected() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 1);
+        let result = s.client.try_retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.project_id,
+            &0u32,
+            &s.accrued,
+            &CreditType::Biodiversity,
+            &hash,
+            &0,
+        );
+        assert_eq!(result, Err(Ok(CreditError::InvalidCreditType)));
+        assert_eq!(s.client.total_retirements(), 0);
+        assert_eq!(s.client.get_total_retired(&s.holder), 0);
+    }
+
+    #[test]
+    fn test_retire_correct_credit_type_succeeds() {
+        let s = setup();
+
+        let hash = make_certificate_hash(&s._env, 1);
+        let id = s.client.retire_credits(
+            &s.holder,
+            &s.bond_id,
+            &s.project_id,
+            &0u32,
+            &s.accrued,
+            &CreditType::Carbon,
+            &hash,
+            &0,
+        );
+        assert_eq!(id, 1);
+        let record = s.client.get_retirement_record(&id);
+        assert_eq!(record.credit_type, CreditType::Carbon);
     }
 }
