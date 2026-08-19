@@ -1050,6 +1050,8 @@ dependencies = [
 name = "nbbs-governance"
 version = "0.1.0"
 dependencies = [
+ "nbbs-bond-issuer",
+ "nbbs-oracle-consumer",
  "nbbs-project-registry",
  "nbbs-shared",
  "soroban-sdk",

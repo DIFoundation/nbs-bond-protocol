@@ -1,6 +1,6 @@
 #![no_std]
 #![allow(deprecated)]
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, Symbol, Val, Vec};
 use nbbs_shared::GovernanceError;
 
 pub const DEFAULT_TIMELOCK_SECONDS: u64 = 172_800;
@@ -16,7 +16,6 @@ pub enum DataKey {
     ProposalCount,
     Vote(u64, Address),
     Nonce(Address),
-    ExecutionNonce(Address),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,18 +79,6 @@ fn require_signer(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
         return Err(GovernanceError::NotSigner);
     }
     Ok(())
-}
-
-fn get_execution_nonce(env: &Env, target: &Address) -> u64 {    env.storage()
-        .instance()
-        .get(&DataKey::ExecutionNonce(target.clone()))
-        .unwrap_or(0)
-}
-
-fn set_execution_nonce(env: &Env, target: &Address, nonce: u64) {
-    env.storage()
-        .instance()
-        .set(&DataKey::ExecutionNonce(target.clone()), &nonce);
 }
 
 fn is_expired(env: &Env, proposal: &Proposal) -> bool {
@@ -352,15 +339,13 @@ impl Governance {
             return Err(GovernanceError::TimelockNotElapsed);
         }
 
-        let exec_nonce = get_execution_nonce(&env, &proposal.target);
-        let mut full_args: Vec<Val> = vec![&env, env.current_contract_address().into_val(&env)];
-        for arg in proposal.args.iter() {
-            full_args.push_back(arg);
-        }
-        full_args.push_back(exec_nonce.into_val(&env));
-
-        env.invoke_contract::<Val>(&proposal.target, &proposal.method, full_args);
-        set_execution_nonce(&env, &proposal.target, exec_nonce + 1);
+        // Pass proposal.args verbatim. The proposer is responsible for
+        // encoding the complete argument list — including the governance
+        // contract address as the caller at position 0 and the correct nonce
+        // for the governance address on the target contract at the last
+        // position. This guarantees the target receives exactly the arguments
+        // it expects, regardless of the target's function signature.
+        env.invoke_contract::<Val>(&proposal.target, &proposal.method, proposal.args.clone());
 
         proposal.status = ProposalStatus::Executed;
         proposal.executed_at = now;
@@ -777,6 +762,8 @@ mod test {
         let gov_id = env.register(Governance, (&signers, &threshold, &DEFAULT_TIMELOCK_SECONDS));
         let gov_client = GovernanceClient::new(&env, &gov_id);
 
+        // Governance contract is the admin of the registry so that it can call
+        // approve_project on behalf of the multi-sig.
         let registry_id = env.register(nbbs_project_registry::ProjectRegistry, (&gov_id,));
         let registry = nbbs_project_registry::ProjectRegistryClient::new(&env, &registry_id);
 
@@ -792,11 +779,22 @@ mod test {
             &0,
         );
 
+        // Encode the full argument list that approve_project expects:
+        //   fn approve_project(env, caller: Address, project_id: u64, nonce: u64)
+        // caller  = gov_id  (the governance contract is the admin on the registry)
+        // nonce   = 0       (first call from the governance address on this registry)
+        let proposal_args: Vec<Val> = vec![
+            &env,
+            gov_id.clone().into_val(&env),
+            pid.into_val(&env),
+            0u64.into_val(&env),
+        ];
+
         let proposal_id = gov_client.propose(
             &signers.get(0).unwrap(),
             &registry_id,
             &Symbol::new(&env, "approve_project"),
-            &vec![&env, pid.into_val(&env)],
+            &proposal_args,
             &Symbol::new(&env, "approve"),
             &0,
         );
@@ -807,7 +805,151 @@ mod test {
         env.ledger().set_timestamp(DEFAULT_TIMELOCK_SECONDS);
         gov_client.execute(&signers.get(0).unwrap(), &proposal_id, &1);
 
+        // Verify the proposal executed successfully and the registry reflects
+        // the approved status — not relying on the accident of argument order.
+        let proposal = gov_client.get_proposal(&proposal_id);
+        assert_eq!(proposal.status, ProposalStatus::Executed);
+
         let project = registry.get_project(&pid);
         assert_eq!(project.status, nbbs_shared::ProjectStatus::Approved);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Cross-contract execution: OracleConsumer.set_signature_threshold
+    //
+    // Verifies that execute passes args verbatim so a function whose first
+    // parameter is NOT a caller address — but whose signature is
+    // (caller: Address, threshold: u32, nonce: u64) — receives the correct
+    // values with no corruption.
+    // ──────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_set_signature_threshold_via_governance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let signers = make_signers(&env, 3);
+        let threshold: u32 = 2;
+        let gov_id = env.register(Governance, (&signers, &threshold, &DEFAULT_TIMELOCK_SECONDS));
+        let gov_client = GovernanceClient::new(&env, &gov_id);
+
+        // Governance is the admin of the OracleConsumer.
+        let oracle_id = env.register(nbbs_oracle_consumer::OracleConsumer, (&gov_id,));
+        let oracle = nbbs_oracle_consumer::OracleConsumerClient::new(&env, &oracle_id);
+
+        // Default threshold is 1 (set in __constructor).
+        assert_eq!(oracle.get_signature_threshold(), 1u32);
+
+        // Encode full args for set_signature_threshold(caller, threshold, nonce):
+        //   caller    = gov_id  (governance is the admin)
+        //   threshold = 3
+        //   nonce     = 0       (first call from governance address on oracle)
+        let new_threshold: u32 = 3;
+        let proposal_args: Vec<Val> = vec![
+            &env,
+            gov_id.clone().into_val(&env),
+            new_threshold.into_val(&env),
+            0u64.into_val(&env),
+        ];
+
+        let proposal_id = gov_client.propose(
+            &signers.get(0).unwrap(),
+            &oracle_id,
+            &Symbol::new(&env, "set_signature_threshold"),
+            &proposal_args,
+            &Symbol::new(&env, "set_thresh"),
+            &0,
+        );
+        gov_client.vote_approve(&signers.get(1).unwrap(), &proposal_id, &0);
+        gov_client.vote_approve(&signers.get(2).unwrap(), &proposal_id, &0);
+
+        env.ledger().set_timestamp(DEFAULT_TIMELOCK_SECONDS);
+        gov_client.execute(&signers.get(0).unwrap(), &proposal_id, &1);
+
+        // The proposal must be marked Executed.
+        let proposal = gov_client.get_proposal(&proposal_id);
+        assert_eq!(proposal.status, ProposalStatus::Executed);
+
+        // The oracle contract must reflect the updated threshold — confirming
+        // that the argument arrived uncorrupted.
+        assert_eq!(oracle.get_signature_threshold(), new_threshold);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Cross-contract execution: BondIssuer.mature_bond
+    //
+    // Verifies that execute passes args verbatim for a function whose signature
+    // is (caller: Address, bond_id: u64, nonce: u64) and that the bond
+    // transitions to Matured status after governance execution.
+    // ──────────────────────────────────────────────────────────────────────────
+    #[test]
+    fn test_mature_bond_via_governance() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let signers = make_signers(&env, 3);
+        let threshold: u32 = 2;
+        let gov_id = env.register(Governance, (&signers, &threshold, &DEFAULT_TIMELOCK_SECONDS));
+        let gov_client = GovernanceClient::new(&env, &gov_id);
+
+        // Governance is the admin of the BondIssuer.
+        let issuer_id = env.register(nbbs_bond_issuer::BondIssuer, (&gov_id,));
+        let issuer = nbbs_bond_issuer::BondIssuerClient::new(&env, &issuer_id);
+
+        // Issue a bond with a maturity date in the future.
+        // maturity_date is set relative to the timestamp we advance to below.
+        // We advance to DEFAULT_TIMELOCK_SECONDS for execution, so coupon
+        // dates and maturity must be beyond timestamp 0 but not in the past.
+        let maturity_date: u64 = DEFAULT_TIMELOCK_SECONDS + 10_000;
+        let mut pid_arr = [0u8; 32];
+        pid_arr[31] = 7;
+        let project_id = soroban_sdk::BytesN::from_array(&env, &pid_arr);
+        let config = nbbs_shared::BondConfig {
+            project_id,
+            face_value: 1_000,
+            coupon_schedule: soroban_sdk::vec![&env, DEFAULT_TIMELOCK_SECONDS / 2],
+            credit_type: nbbs_shared::CreditType::Carbon,
+            maturity_date,
+            total_supply: 100,
+        };
+        // issue_bond uses the governance address's nonce on the issuer — nonce 0.
+        let bond_id = issuer.issue_bond(&gov_id, &config, &0u64);
+
+        // Advance past maturity so mature_bond doesn't reject the call.
+        env.ledger().set_timestamp(maturity_date + 1);
+
+        // Encode full args for mature_bond(caller, bond_id, nonce):
+        //   caller  = gov_id  (governance is the admin)
+        //   bond_id = bond_id
+        //   nonce   = 1       (second call from governance on issuer — issue_bond was nonce 0)
+        let proposal_args: Vec<Val> = vec![
+            &env,
+            gov_id.clone().into_val(&env),
+            bond_id.into_val(&env),
+            1u64.into_val(&env),
+        ];
+
+        let proposal_id = gov_client.propose(
+            &signers.get(0).unwrap(),
+            &issuer_id,
+            &Symbol::new(&env, "mature_bond"),
+            &proposal_args,
+            &Symbol::new(&env, "mature"),
+            &0,
+        );
+        gov_client.vote_approve(&signers.get(1).unwrap(), &proposal_id, &0);
+        gov_client.vote_approve(&signers.get(2).unwrap(), &proposal_id, &0);
+
+        // Governance's own timelock must also elapse.
+        env.ledger().set_timestamp(maturity_date + 1 + DEFAULT_TIMELOCK_SECONDS);
+
+        gov_client.execute(&signers.get(0).unwrap(), &proposal_id, &1);
+
+        // The proposal must be marked Executed.
+        let proposal = gov_client.get_proposal(&proposal_id);
+        assert_eq!(proposal.status, ProposalStatus::Executed);
+
+        // The bond must now be in Matured status — arguments arrived uncorrupted.
+        let state = issuer.get_bond_state(&bond_id);
+        assert_eq!(state.status, nbbs_shared::BondStatus::Matured);
     }
 }
