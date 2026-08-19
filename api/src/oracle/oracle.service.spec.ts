@@ -407,6 +407,96 @@ describe('OracleService', () => {
     });
   });
 
+  describe('submitReport', () => {
+    const dto = {
+      projectId: 'a1b2'.padEnd(64, '0'),
+      periodStart: 1700000000,
+      periodEnd: 1700086400,
+      carbonSequestered: 1200,
+      methodology: 'VM0003',
+      evidenceHash: 'QmYwAPJzv5CZsnAzt8auVZRnGi2C8Qp9G2YB3hM9oWZpDa',
+    };
+
+    it('allocates nonce for the admin signer, not the provider address', async () => {
+      process.env.ADMIN_SECRET_KEY = 'test-admin-secret';
+      try {
+        const adminPublicKey = 'GAJRCN6P67RAKN2WHGHRP7D7UGIFNIGD5CIBI2XYPAEG7J5VMXO53KWQ';
+        const adminKeypairService = {
+          getKeypairFromSecret: jest.fn().mockReturnValue({ publicKey: () => adminPublicKey }),
+        };
+
+        const localContractService = {
+          invokeContractMethod: jest.fn().mockResolvedValue({
+            result: nativeToScVal(BigInt(1), { type: 'u64' }),
+          }),
+        };
+        const localIpfsService = {
+          uploadJson: jest.fn().mockResolvedValue({ hash: 'QmYwAPJzv5CZsnAzt8auVZRnGi2C8Qp9G2YB3hM9oWZpDa' }),
+        };
+        const localNonceService = { next: jest.fn().mockResolvedValue(0) };
+
+        const localService = new OracleService(
+          localContractService as any,
+          localIpfsService as any,
+          adminKeypairService as any,
+          localNonceService as any,
+        );
+
+        await localService.submitReport(dto, PROVIDER_ADDRESS);
+
+        expect(localNonceService.next).toHaveBeenCalledWith(
+          expect.any(String),
+          adminPublicKey,
+        );
+        expect(localNonceService.next).not.toHaveBeenCalledWith(
+          expect.any(String),
+          PROVIDER_ADDRESS,
+        );
+      } finally {
+        delete process.env.ADMIN_SECRET_KEY;
+      }
+    });
+
+    it('signs the transaction with the admin secret', async () => {
+      process.env.ADMIN_SECRET_KEY = 'test-admin-secret';
+      try {
+        const adminPublicKey = 'GAJRCN6P67RAKN2WHGHRP7D7UGIFNIGD5CIBI2XYPAEG7J5VMXO53KWQ';
+        const adminKeypairService = {
+          getKeypairFromSecret: jest.fn().mockReturnValue({ publicKey: () => adminPublicKey }),
+        };
+
+        const localContractService = {
+          invokeContractMethod: jest.fn().mockResolvedValue({
+            result: nativeToScVal(BigInt(1), { type: 'u64' }),
+          }),
+        };
+        const localIpfsService = {
+          uploadJson: jest.fn().mockResolvedValue({ hash: 'QmYwAPJzv5CZsnAzt8auVZRnGi2C8Qp9G2YB3hM9oWZpDa' }),
+        };
+        const localNonceService = { next: jest.fn().mockResolvedValue(5) };
+
+        const localService = new OracleService(
+          localContractService as any,
+          localIpfsService as any,
+          adminKeypairService as any,
+          localNonceService as any,
+        );
+
+        await localService.submitReport(dto, PROVIDER_ADDRESS);
+
+        expect(localContractService.invokeContractMethod).toHaveBeenCalledWith(
+          expect.any(String),
+          'submit_report',
+          'test-admin-secret',
+          expect.any(Array),
+          5,
+        );
+      } finally {
+        delete process.env.ADMIN_SECRET_KEY;
+      }
+    });
+  });
+
   describe('registerProvider', () => {
     const dto = { providerAddress: PROVIDER_ADDRESS, methodology: 'VERRA-VCS' };
 

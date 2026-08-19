@@ -104,7 +104,8 @@ export class DexService {
 
   async listBondTokens(dto: ListBondDto, sellerAddress: string): Promise<OrderResponse> {
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), sellerAddress);
+    const adminPublicKey = this.getAdminPublicKey();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), adminPublicKey);
 
     const { result } = await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'list_bond_tokens', adminSecret,
@@ -137,7 +138,8 @@ export class DexService {
     }
 
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), buyerAddress);
+    const adminPublicKey = this.getAdminPublicKey();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), adminPublicKey);
 
     try {
       await this.contractService.invokeContractMethod(
@@ -156,7 +158,7 @@ export class DexService {
       // bookkeeping were rolled back with the frame — re-sync the nonce mirror
       // from the chain so the buyer can simply retry the purchase instead of
       // hitting InvalidNonce on the next attempt.
-      await this.nonceService.sync(DEX_ROUTER(), buyerAddress).catch(() => undefined);
+      await this.nonceService.sync(DEX_ROUTER(), adminPublicKey).catch(() => undefined);
       throw this.mapDexError(error);
     }
 
@@ -166,7 +168,8 @@ export class DexService {
 
   async cancelOrder(orderId: number, callerAddress: string): Promise<void> {
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
+    const adminPublicKey = this.getAdminPublicKey();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), adminPublicKey);
 
     await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'cancel_listing', adminSecret,
@@ -217,7 +220,8 @@ export class DexService {
     callerAddress: string,
   ): Promise<QuoteTransactionResponse> {
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
+    const adminPublicKey = this.getAdminPublicKey();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), adminPublicKey);
 
     const { transactionHash } = await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'deposit_quote', adminSecret,
@@ -237,7 +241,8 @@ export class DexService {
     callerAddress: string,
   ): Promise<QuoteTransactionResponse> {
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(DEX_ROUTER(), callerAddress);
+    const adminPublicKey = this.getAdminPublicKey();
+    const nonce = await this.nonceService.next(DEX_ROUTER(), adminPublicKey);
 
     const { transactionHash } = await this.contractService.invokeContractMethod(
       DEX_ROUTER(), 'withdraw_quote', adminSecret,
@@ -279,6 +284,10 @@ export class DexService {
 
   private getAdminSecret(): string {
     return process.env.ADMIN_SECRET_KEY || '';
+  }
+
+  private getAdminPublicKey(): string {
+    return this.stellarService.getKeypairFromSecret(this.getAdminSecret()).publicKey();
   }
 
   private mapDexError(error: unknown): Error {

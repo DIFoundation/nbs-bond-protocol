@@ -69,7 +69,8 @@ export class OracleService {
     });
 
     const adminSecret = this.getAdminSecret();
-    const nonce = await this.nonceService.next(ORACLE_CONSUMER(), providerAddress);
+    const adminAddress = this.stellarService.getKeypairFromSecret(adminSecret).publicKey();
+    const nonce = await this.nonceService.next(ORACLE_CONSUMER(), adminAddress);
 
     const { result } = await this.contractService.invokeContractMethod(
       ORACLE_CONSUMER(), 'submit_report', adminSecret,
