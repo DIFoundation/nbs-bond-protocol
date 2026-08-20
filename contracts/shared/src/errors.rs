@@ -119,4 +119,14 @@ pub enum GovernanceError {
     NotQueued = 9,
     AlreadyExecuted = 10,
     ProposalExpired = 11,
+    /// The proposal's `(target, method)` pair is not present in the on-chain
+    /// execution allowlist, or the proposal targets the governance contract
+    /// itself with a method that is not one of its self-administration
+    /// entrypoints. Returned by `execute` *before* the cross-contract call is
+    /// dispatched, so a rejected proposal never reaches the target.
+    UnauthorizedCall = 12,
+    /// A self-administration proposal carried an argument list that could not
+    /// be decoded into the expected types, or whose values were out of range
+    /// (for example an allowlist longer than `MAX_ALLOWED_CALLS`).
+    InvalidCallArgs = 13,
 }
