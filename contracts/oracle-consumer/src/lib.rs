@@ -1756,10 +1756,6 @@ mod test {
         let client = OracleConsumerClient::new(&env, &contract_id);
 
         client.register_provider(&admin, &provider, &Symbol::new(&env, "verra_vcs"), &0);
-        // verify_report requires a registered, active provider as the
-        // caller — the admin is deliberately not exempt (see verify_report's
-        // own doc comment), so this test needs a second provider to act as
-        // the verifier rather than calling as the admin.
         client.register_provider(&admin, &verifier, &Symbol::new(&env, "satellite"), &1);
         client.add_stake(&provider, &100_000i128, &0);
 
