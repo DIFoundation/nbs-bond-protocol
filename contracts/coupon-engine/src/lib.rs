@@ -1221,6 +1221,14 @@ mod test {
         bond_id
     }
 
+    /// Derive a disjoint half-open reporting window from `admin_nonce`, which
+    /// strictly increases across submissions within a test, so multiple reports
+    /// for the same project never overlap.
+    fn period_for_nonce(admin_nonce: u64) -> (u64, u64) {
+        let period_start = 1000u64 + admin_nonce * 100;
+        (period_start, period_start + 100)
+    }
+
     fn submit_verified_report(
         env: &Env,
         t: &TestEnv,
@@ -1233,17 +1241,13 @@ mod test {
         let registry = nbbs_project_registry::ProjectRegistryClient::new(env, &t.registry_id);
         let registry_project_id = registry.get_project_by_hash(project_id).id;
         let provider = Address::generate(env);
-        oc.register_provider(
-            &t.admin,
-            &provider,
-            &Symbol::new(env, "verra_vcs"),
-            &admin_nonce,
-        );
+        oc.register_provider(&t.admin, &provider, &Symbol::new(env, "verra_vcs"), &admin_nonce);
+        let (period_start, period_end) = period_for_nonce(admin_nonce);
         let report_id = oc.submit_report(
             &provider,
             &registry_project_id,
-            &1000u64,
-            &2000u64,
+            &period_start,
+            &period_end,
             &carbon,
             &biodiversity,
             &Symbol::new(env, "verra_vcs"),
@@ -1273,17 +1277,13 @@ mod test {
         let registry = nbbs_project_registry::ProjectRegistryClient::new(env, &t.registry_id);
         let registry_project_id = registry.get_project_by_hash(project_id).id;
         let provider = Address::generate(env);
-        oc.register_provider(
-            &t.admin,
-            &provider,
-            &Symbol::new(env, "verra_vcs"),
-            &admin_nonce,
-        );
+        oc.register_provider(&t.admin, &provider, &Symbol::new(env, "verra_vcs"), &admin_nonce);
+        let (period_start, period_end) = period_for_nonce(admin_nonce);
         oc.submit_report(
             &provider,
             &registry_project_id,
-            &1000u64,
-            &2000u64,
+            &period_start,
+            &period_end,
             &carbon,
             &biodiversity,
             &Symbol::new(env, "verra_vcs"),
