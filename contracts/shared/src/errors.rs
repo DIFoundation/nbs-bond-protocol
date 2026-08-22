@@ -107,6 +107,7 @@ pub enum CreditError {
     ProjectMismatch = 9,
     PeriodNotFound = 10,
     PeriodNotDistributed = 11,
+    InsufficientCreditsByType = 12,
 }
 
 #[derive(Clone, Debug, PartialEq)]
