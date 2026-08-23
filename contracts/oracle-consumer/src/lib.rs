@@ -1199,6 +1199,7 @@ mod test {
         let project_id = registry.register_project(
             &owner,
             &make_ipfs_hash(env, 200),
+            &Symbol::new(env, "Project"),
             &Symbol::new(env, "VCS"),
             &Symbol::new(env, "US"),
             &0,
@@ -1286,6 +1287,7 @@ mod test {
         let pending_id = registry.register_project(
             &owner,
             &make_ipfs_hash(&env, 1),
+            &Symbol::new(&env, "Project"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &0,
@@ -1293,6 +1295,7 @@ mod test {
         let rejected_id = registry.register_project(
             &owner,
             &make_ipfs_hash(&env, 2),
+            &Symbol::new(&env, "Project"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &1,
@@ -1301,6 +1304,7 @@ mod test {
         let inactive_id = registry.register_project(
             &owner,
             &make_ipfs_hash(&env, 3),
+            &Symbol::new(&env, "Project"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &2,
@@ -1340,6 +1344,7 @@ mod test {
         let project_id = registry.register_project(
             &owner,
             &metadata_hash,
+            &Symbol::new(&env, "Project"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &0,
@@ -1651,6 +1656,7 @@ mod test {
         let pa = registry.register_project(
             &owner,
             &make_ipfs_hash(&env, 10),
+            &Symbol::new(&env, "ProjectA"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &0,
@@ -1659,6 +1665,7 @@ mod test {
         let pb = registry.register_project(
             &owner,
             &make_ipfs_hash(&env, 11),
+            &Symbol::new(&env, "ProjectB"),
             &Symbol::new(&env, "VCS"),
             &Symbol::new(&env, "US"),
             &1,
