@@ -46,20 +46,33 @@ fn require_admin(env: &Env, caller: &Address) -> Result<(), BondError> {
 /// the set of addresses that have ever held the bond without duplicating
 /// entries. Addresses that later transfer their entire balance out remain in
 /// the list (with a zero balance) and are filtered at coupon distribution.
-fn append_holder(env: &Env, bond_id: u64, holder: Address) {
+fn append_holder(env: &Env, bond_id: u64, maturity_date: u64, holder: Address) {
     let key = DataKey::HolderList(bond_id);
     let mut list: Vec<Address> = env.storage().persistent().get(&key).unwrap_or(vec![&env]);
     list.push_back(holder);
     env.storage().persistent().set(&key, &list);
 
-    let count: u64 = env
-        .storage()
-        .instance()
-        .get(&DataKey::HolderCount(bond_id))
-        .unwrap_or(0);
     env.storage()
-        .instance()
-        .set(&DataKey::HolderCount(bond_id), &(count + 1));
+        .persistent()
+        .set(&DataKey::HolderCount(bond_id), &(list.len() as u64));
+    extend_bond_ttl(env, bond_id, maturity_date);
+}
+
+fn holder_count_from_persistent(env: &Env, bond_id: u64) -> u64 {
+    if let Some(count) = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderCount(bond_id))
+    {
+        return count;
+    }
+
+    let list: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::HolderList(bond_id))
+        .unwrap_or(vec![env]);
+    list.len() as u64
 }
 
 fn extend_bond_ttl(env: &Env, bond_id: u64, maturity_date: u64) {
@@ -75,12 +88,24 @@ fn extend_bond_ttl(env: &Env, bond_id: u64, maturity_date: u64) {
 
     let config_key = DataKey::BondConfig(bond_id);
     let state_key = DataKey::BondState(bond_id);
+    let holder_list_key = DataKey::HolderList(bond_id);
+    let holder_count_key = DataKey::HolderCount(bond_id);
     env.storage()
         .persistent()
         .extend_ttl(&config_key, threshold, extend_to);
     env.storage()
         .persistent()
         .extend_ttl(&state_key, threshold, extend_to);
+    if env.storage().persistent().has(&holder_list_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&holder_list_key, threshold, extend_to);
+    }
+    if env.storage().persistent().has(&holder_count_key) {
+        env.storage()
+            .persistent()
+            .extend_ttl(&holder_count_key, threshold, extend_to);
+    }
 }
 
 #[contract]
@@ -155,6 +180,13 @@ impl BondIssuer {
         env.storage()
             .persistent()
             .set(&DataKey::BondState(bond_id), &state);
+        let holders: Vec<Address> = vec![&env];
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderList(bond_id), &holders);
+        env.storage()
+            .persistent()
+            .set(&DataKey::HolderCount(bond_id), &0u64);
 
         extend_bond_ttl(&env, bond_id, config.maturity_date);
 
@@ -239,7 +271,7 @@ impl BondIssuer {
         env.storage().persistent().set(&balance_key, &new_balance);
 
         if current_balance == 0 {
-            append_holder(&env, bond_id, investor.clone());
+            append_holder(&env, bond_id, config.maturity_date, investor.clone());
         }
 
         state.total_subscribed = new_total;
@@ -311,7 +343,7 @@ impl BondIssuer {
         env.storage().persistent().set(&to_key, &new_to_balance);
 
         if to_balance == 0 {
-            append_holder(&env, bond_id, to.clone());
+            append_holder(&env, bond_id, config.maturity_date, to.clone());
         }
 
         env.events().publish(
@@ -434,10 +466,7 @@ impl BondIssuer {
 
     /// Number of distinct holders ever recorded for `bond_id`.
     pub fn get_holder_count(env: Env, bond_id: u64) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::HolderCount(bond_id))
-            .unwrap_or(0)
+        holder_count_from_persistent(&env, bond_id)
     }
 
     /// Returns up to `count` holder addresses for `bond_id` starting at index
@@ -1014,6 +1043,25 @@ mod test {
     }
 
     #[test]
+    fn test_holder_count_written_to_persistent_storage() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &2000, &0);
+        client.subscribe(&user2, &bond_id, &3000, &0);
+
+        env.as_contract(&client.address, || {
+            let key = DataKey::HolderCount(bond_id);
+            assert!(env.storage().persistent().has(&key));
+            assert!(!env.storage().instance().has(&key));
+            let stored: u64 = env.storage().persistent().get(&key).unwrap();
+            assert_eq!(stored, 2);
+        });
+    }
+
+    #[test]
     fn test_holder_list_dedupes_repeat_subscriber() {
         let (env, client, admin, user) = setup();
         let config = make_config(&env);
@@ -1100,6 +1148,55 @@ mod test {
         );
         assert_eq!(client.get_holder_list_range(&bond_id, &3, &20), vec![&env]);
         assert_eq!(client.get_holder_list_range(&bond_id, &0, &0), vec![&env]);
+    }
+
+    #[test]
+    fn test_holder_count_survives_instance_archival() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.subscribe(&user2, &bond_id, &1000, &0);
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .instance()
+                .remove(&DataKey::HolderCount(bond_id));
+        });
+
+        assert_eq!(client.get_holder_count(&bond_id), 2);
+        assert_eq!(
+            client.get_holder_count(&bond_id),
+            client.get_holder_list(&bond_id).len() as u64
+        );
+    }
+
+    #[test]
+    fn test_holder_count_migrates_from_persistent_list_when_count_missing() {
+        let (env, client, admin, user) = setup();
+        let user2 = Address::generate(&env);
+        let config = make_config(&env);
+        let bond_id = client.issue_bond(&admin, &config, &0);
+
+        client.subscribe(&user, &bond_id, &1000, &0);
+        client.subscribe(&user2, &bond_id, &1000, &0);
+
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::HolderCount(bond_id));
+            env.storage()
+                .instance()
+                .set(&DataKey::HolderCount(bond_id), &0u64);
+        });
+
+        assert_eq!(client.get_holder_count(&bond_id), 2);
+        assert_eq!(
+            client.get_holder_count(&bond_id),
+            client.get_holder_list(&bond_id).len() as u64
+        );
     }
 
     #[test]
@@ -1241,17 +1338,24 @@ mod test {
         let contract_addr = client.address.clone();
         let config_key = DataKey::BondConfig(bond_id);
         let state_key = DataKey::BondState(bond_id);
+        let holder_list_key = DataKey::HolderList(bond_id);
+        let holder_count_key = DataKey::HolderCount(bond_id);
 
         env.ledger().set_sequence_number(100);
         client.subscribe(&user, &bond_id, &500, &0);
-        let (ttl_config, ttl_state) = env.as_contract(&contract_addr, || {
-            (
-                env.storage().persistent().get_ttl(&config_key),
-                env.storage().persistent().get_ttl(&state_key),
-            )
-        });
+        let (ttl_config, ttl_state, ttl_holder_list, ttl_holder_count) =
+            env.as_contract(&contract_addr, || {
+                (
+                    env.storage().persistent().get_ttl(&config_key),
+                    env.storage().persistent().get_ttl(&state_key),
+                    env.storage().persistent().get_ttl(&holder_list_key),
+                    env.storage().persistent().get_ttl(&holder_count_key),
+                )
+            });
         assert!(ttl_config > 0);
         assert!(ttl_state > 0);
+        assert!(ttl_holder_list > 0);
+        assert!(ttl_holder_count > 0);
     }
 
     #[test]
@@ -1265,17 +1369,24 @@ mod test {
         let contract_addr = client.address.clone();
         let config_key = DataKey::BondConfig(bond_id);
         let state_key = DataKey::BondState(bond_id);
+        let holder_list_key = DataKey::HolderList(bond_id);
+        let holder_count_key = DataKey::HolderCount(bond_id);
 
         env.ledger().set_sequence_number(100);
         client.transfer(&user, &user2, &bond_id, &500);
-        let (ttl_config, ttl_state) = env.as_contract(&contract_addr, || {
-            (
-                env.storage().persistent().get_ttl(&config_key),
-                env.storage().persistent().get_ttl(&state_key),
-            )
-        });
+        let (ttl_config, ttl_state, ttl_holder_list, ttl_holder_count) =
+            env.as_contract(&contract_addr, || {
+                (
+                    env.storage().persistent().get_ttl(&config_key),
+                    env.storage().persistent().get_ttl(&state_key),
+                    env.storage().persistent().get_ttl(&holder_list_key),
+                    env.storage().persistent().get_ttl(&holder_count_key),
+                )
+            });
         assert!(ttl_config > 0);
         assert!(ttl_state > 0);
+        assert!(ttl_holder_list > 0);
+        assert!(ttl_holder_count > 0);
     }
 
     #[test]
@@ -1457,6 +1568,60 @@ mod test {
                     for (u, &bal) in balances.iter().enumerate() {
                         prop_assert_eq!(client.get_holder_balance(&bond_id, &users[u]), bal);
                     }
+                }
+            }
+
+            #[test]
+            fn holder_count_matches_list_len_across_operations(
+                supply in 100i128..1_000_000i128,
+                ops in proptest::collection::vec(
+                    (any::<bool>(), 0usize..3, 0usize..3, 1i128..50_000i128),
+                    0..50
+                ),
+            ) {
+                let env = Env::default();
+                env.mock_all_auths();
+                let admin = Address::generate(&env);
+                let users: std::vec::Vec<Address> =
+                    (0..3).map(|_| Address::generate(&env)).collect();
+                let contract_id = env.register(BondIssuer, (&admin,));
+                let client = BondIssuerClient::new(&env, &contract_id);
+
+                let mut config = make_config(&env);
+                config.total_supply = supply;
+                let bond_id = client.issue_bond(&admin, &config, &0);
+
+                let mut balances = [0i128; 3];
+                let mut total_subscribed = 0i128;
+                let mut nonces = [0u64; 3];
+
+                for (is_subscribe, a, b, amount) in ops {
+                    if is_subscribe {
+                        if amount <= supply - total_subscribed {
+                            client.subscribe(&users[a], &bond_id, &amount, &nonces[a]);
+                            balances[a] += amount;
+                            total_subscribed += amount;
+                            nonces[a] += 1;
+                        } else {
+                            let res = client.try_subscribe(&users[a], &bond_id, &amount, &nonces[a]);
+                            prop_assert_eq!(res, Err(Ok(BondError::InsufficientSupply)));
+                        }
+                    } else {
+                        let to = if a == b { (b + 1) % 3 } else { b };
+                        if amount <= balances[a] {
+                            client.transfer(&users[a], &users[to], &bond_id, &amount);
+                            balances[a] -= amount;
+                            balances[to] += amount;
+                        } else {
+                            let res = client.try_transfer(&users[a], &users[to], &bond_id, &amount);
+                            prop_assert_eq!(res, Err(Ok(BondError::InsufficientBalance)));
+                        }
+                    }
+
+                    prop_assert_eq!(
+                        client.get_holder_count(&bond_id),
+                        client.get_holder_list(&bond_id).len() as u64
+                    );
                 }
             }
 
