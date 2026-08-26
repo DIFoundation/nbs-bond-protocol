@@ -10,7 +10,7 @@ export interface ReportResponse {
   projectId: string;
   periodStart: number;
   periodEnd: number;
-  carbonSequestered: number;
+  carbonSequestered: string;
   methodology: string;
   ipfsHash: string;
   providerAddress: string;
@@ -44,14 +44,14 @@ export interface ProviderResponse {
   name: string;
   active: boolean;
   registeredAt: string;
-  stake?: number;
+  stake?: string;
   health?: ProviderHealthStatus;
 }
 
 export interface SlashRecord {
   reportId: number;
-  penalty: number;
-  remainingStake: number;
+  penalty: string;
+  remainingStake: string;
   timestamp: string;
   activeAfter: boolean;
 }
@@ -70,8 +70,8 @@ export interface ProviderStatsResponse {
   reportsSubmitted: number;
   challengesFaced: number;
   slashes: number;
-  totalPenalty: number;
-  stake: number;
+  totalPenalty: string;
+  stake: string;
   active: boolean;
 }
 

@@ -201,7 +201,7 @@ export class BondsService implements OnModuleDestroy {
     await this.redis.del(`bond:${id}`);
     await this.redis.sAdd(`bond:${id}:holders`, dto.investorAddress);
 
-    return { bondId: id, investorAddress: dto.investorAddress, amount: dto.amount, transactionHash: transactionHash || '' };
+    return { bondId: id, investorAddress: dto.investorAddress, amount: String(dto.amount), transactionHash: transactionHash || '' };
   }
 
   async getHolders(id: number): Promise<HolderListResponse> {
@@ -210,7 +210,7 @@ export class BondsService implements OnModuleDestroy {
 
     for (const address of holderAddresses) {
       const balance = await this.getHolderBalance(id, address);
-      if (balance > 0) holders.push({ address, balance });
+      if (balance > '0') holders.push({ address, balance });
     }
 
     return { bondId: id, holders, total: holders.length };
@@ -221,15 +221,15 @@ export class BondsService implements OnModuleDestroy {
    * address cannot be resolved on-chain. Used to filter the holder set passed
    * to CouponEngine so stale (zero-balance) addresses are never forwarded.
    */
-  private async getHolderBalance(id: number, address: string): Promise<number> {
+  private async getHolderBalance(id: number, address: string): Promise<string> {
     try {
       const balanceScVal = await this.contractService.simulateCall({
         contractAddress: BOND_ISSUER(), method: 'get_holder_balance',
         args: [nativeToScVal(BigInt(id), { type: 'u64' }), Address.fromString(address).toScVal()],
       });
-      return Number(scValToNative(balanceScVal));
+      return String(scValToNative(balanceScVal));
     } catch {
-      return 0;
+      return '0';
     }
   }
 
@@ -247,7 +247,7 @@ export class BondsService implements OnModuleDestroy {
     const holders: string[] = [];
     for (const address of candidates) {
       const balance = await this.getHolderBalance(id, address);
-      if (balance > 0) holders.push(address);
+      if (balance > '0') holders.push(address);
     }
     return holders;
   }
@@ -298,7 +298,7 @@ export class BondsService implements OnModuleDestroy {
     const holderBalances: Array<{ address: string; balance: bigint }> = [];
     for (const address of holderAddresses) {
       const balance = await this.getHolderBalance(id, address);
-      if (balance > 0) {
+      if (balance > '0') {
         holderBalances.push({ address, balance: BigInt(balance) });
       }
     }
@@ -348,7 +348,7 @@ export class BondsService implements OnModuleDestroy {
     return {
       bondId: id,
       periodIndex: dto.periodIndex,
-      totalCredits: Number(parsed?.[2] ?? 0),
+      totalCredits: String(parsed?.[2] ?? 0),
       holderCount: Number(parsed?.[3] ?? 0),
       batchCount,
     };
@@ -384,11 +384,11 @@ export class BondsService implements OnModuleDestroy {
     );
 
     const accrued = await this.readAccruedTotal(id, investorAddress);
-    if (accrued <= 0) {
+    if (accrued <= '0') {
       return {
         bondId: id,
         investorAddress,
-        credits: 0,
+        credits: '0',
         transactionHash: '',
       };
     }
@@ -413,7 +413,7 @@ export class BondsService implements OnModuleDestroy {
     return {
       bondId: id,
       investorAddress,
-      credits: Number(scValToNative(result)),
+      credits: String(scValToNative(result)),
       transactionHash: transactionHash || '',
     };
   }
@@ -423,7 +423,7 @@ export class BondsService implements OnModuleDestroy {
    * Read straight from the contract on every call, so it reflects any
    * retirement or accrual that happened since the last response was cached.
    */
-  private async readAccruedTotal(id: number, holder: string): Promise<number> {
+  private async readAccruedTotal(id: number, holder: string): Promise<string> {
     const totalScVal = await this.contractService.simulateCall({
       contractAddress: COUPON_ENGINE(), method: 'accrued_credits',
       args: [
@@ -431,7 +431,7 @@ export class BondsService implements OnModuleDestroy {
         Address.fromString(holder).toScVal(),
       ],
     });
-    return Number(scValToNative(totalScVal));
+    return String(scValToNative(totalScVal));
   }
 
   /**
@@ -545,7 +545,7 @@ export class BondsService implements OnModuleDestroy {
       bondId: id,
       fromAddress: dto.fromAddress,
       toAddress: dto.toAddress,
-      amount: dto.amount,
+      amount: String(dto.amount),
       transactionHash: transactionHash || '',
     };
   }
@@ -558,7 +558,7 @@ export class BondsService implements OnModuleDestroy {
 
     return {
       bondId: id,
-      undistributedTotal: Number(scValToNative(resultScVal)),
+      undistributedTotal: String(scValToNative(resultScVal)),
     };
   }
 
@@ -594,8 +594,8 @@ export class BondsService implements OnModuleDestroy {
         contractAddress: COUPON_ENGINE(), method: 'accrued_credits_by_type',
         args: [bondIdScVal, holderScVal, nativeToScVal(creditType, { type: 'symbol' })],
       });
-      const amount = Number(scValToNative(typeScVal));
-      if (amount > 0) {
+      const amount = String(scValToNative(typeScVal));
+      if (amount > '0') {
         perCreditType.push({ creditType, amount });
       }
     }
@@ -603,7 +603,7 @@ export class BondsService implements OnModuleDestroy {
     return {
       bondId: id,
       holder,
-      total: Number(scValToNative(totalScVal)),
+      total: String(scValToNative(totalScVal)),
       perCreditType,
     };
   }
@@ -677,10 +677,10 @@ export class BondsService implements OnModuleDestroy {
       periodIndex: Number(data[0]),
       startTime: Number(data[1]),
       endTime: Number(data[2]),
-      totalCreditsEarned: Number(data[3]),
+      totalCreditsEarned: String(data[3]),
       distributed: Boolean(data[4]),
       reportId: Number(data[5]),
-      undistributed: Number(data[6]),
+      undistributed: String(data[6]),
     };
   }
 
@@ -710,7 +710,7 @@ export class BondsService implements OnModuleDestroy {
       projectId: Buffer.from(data[3] as Uint8Array).toString('hex'),
       periodStart: Number(data[4]),
       periodEnd: Number(data[5]),
-      carbonSequestered: Number(data[6]),
+      carbonSequestered: String(data[6]),
       methodology: data[8] as string,
       ipfsHash: Buffer.from(data[9] as Uint8Array).toString('hex'),
       status: this.reportStatusFromIndex(Number(data[10])),
@@ -772,9 +772,9 @@ export class BondsService implements OnModuleDestroy {
   private decodeSweepReceipt(result: xdr.ScVal): {
     bondId: number;
     destination: string;
-    amount: number;
-    carbonAmount: number;
-    biodiversityAmount: number;
+    amount: string;
+    carbonAmount: string;
+    biodiversityAmount: string;
   } {
     const native = scValToNative(result) as unknown;
     const read = (key: string, index: number): unknown => {
@@ -788,9 +788,9 @@ export class BondsService implements OnModuleDestroy {
     return {
       bondId: Number(read('bond_id', 0) ?? 0),
       destination: String(read('destination', 1) ?? ''),
-      amount: Number(read('amount', 2) ?? 0),
-      carbonAmount: Number(read('carbon_amount', 3) ?? 0),
-      biodiversityAmount: Number(read('biodiversity_amount', 4) ?? 0),
+      amount: String(read('amount', 2) ?? 0),
+      carbonAmount: String(read('carbon_amount', 3) ?? 0),
+      biodiversityAmount: String(read('biodiversity_amount', 4) ?? 0),
     };
   }
 
@@ -848,13 +848,13 @@ export class BondsService implements OnModuleDestroy {
     return {
       id,
       projectId: Buffer.from(config[0] as Uint8Array).toString('hex'),
-      faceValue: Number(config[1]),
-      couponSchedule: (config[2] as any[]).map((v: bigint) => Number(v)),
+      faceValue: String(config[1]),
+      couponSchedule: (config[2] as any[]).map((v: bigint) => String(v)),
       creditType: config[3] as CreditTypeEnum,
       maturityDate,
       maturityStatus,
-      totalSupply: Number(config[5]),
-      totalSubscribed: Number(state[0]),
+      totalSupply: String(config[5]),
+      totalSubscribed: String(state[0]),
       status,
       createdAt: new Date(Number(state[2]) * 1000).toISOString(),
     };

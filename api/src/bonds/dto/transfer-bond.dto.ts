@@ -1,4 +1,4 @@
-import { IsNumber, IsPositive, IsString } from 'class-validator';
+import { IsNumber, IsPositive, IsString, IsNotEmpty } from 'class-validator';
 import { IsStellarAddress } from '../../common/decorators/is-stellar-address.decorator';
 
 export class TransferBondDto {
@@ -10,7 +10,7 @@ export class TransferBondDto {
   @IsStellarAddress()
   toAddress: string;
 
-  @IsNumber()
-  @IsPositive()
-  amount: number;
+  @IsString()
+  @IsNotEmpty()
+  amount: string;
 }
